@@ -1,0 +1,7 @@
+anthropic>=1.9.0
+fastapi>=0.141
+uvicorn[standard]>=0.30
+python-dotenv>=1.0
+truststore>=0.10
+passlib[bcrypt]>=1.7
+python-jose[cryptography]>=3.3
