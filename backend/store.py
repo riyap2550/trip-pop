@@ -31,6 +31,10 @@ DEFAULT_STATE = {
     "destinations": {},  # cities the planning agent added, keyed by destination_id
     "users": [],
     "refresh_tokens": [],
+    "memberships": [],        # {id, trip_id, user_id, role, invited_by_user_id, joined_at, display_name, avatar_url}
+    "invite_tokens": [],      # {id, token, trip_id, inviter_user_id, phone_number, role, created_at, expires_at, used}
+    "itinerary_events": [],   # {id, trip_id, at, action, item_id, day_date, author_user_id, author_name, summary}
+    "push_tokens": [],        # {user_id, token, platform, updated_at}
 }
 
 
@@ -50,6 +54,28 @@ def _load() -> dict:
         state.setdefault(key, json.loads(json.dumps(value)))
     for key, value in DEFAULT_STATE["profile"].items():
         state["profile"].setdefault(key, value)
+    # Migration: assign owner for trips missing owner_user_id
+    users = state.get("users", [])
+    for trip in state["trips"]:
+        if not trip.get("owner_user_id"):
+            if len(users) == 1:
+                uid = users[0]["id"]
+                trip["owner_user_id"] = uid
+                already_member = any(
+                    m["trip_id"] == trip["id"] and m["user_id"] == uid
+                    for m in state.get("memberships", [])
+                )
+                if not already_member:
+                    state["memberships"].append({
+                        "id": new_id("mem"),
+                        "trip_id": trip["id"],
+                        "user_id": uid,
+                        "role": "owner",
+                        "invited_by_user_id": None,
+                        "joined_at": now_iso(),
+                        "display_name": users[0].get("display_name", ""),
+                        "avatar_url": users[0].get("avatar_url"),
+                    })
     return state
 
 
@@ -83,3 +109,14 @@ class transaction:
 
 def find(items: list[dict], item_id: str) -> dict | None:
     return next((i for i in items if i["id"] == item_id), None)
+
+
+def find_memberships(state, trip_id):
+    return [m for m in state.get("memberships", []) if m["trip_id"] == trip_id]
+
+
+def user_role(state, trip_id, user_id):
+    for m in state.get("memberships", []):
+        if m["trip_id"] == trip_id and m["user_id"] == user_id:
+            return m["role"]
+    return None

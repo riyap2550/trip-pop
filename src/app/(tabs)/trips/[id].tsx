@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Alert, StyleSheet, View } from 'react-native';
 
 import { BookingLink } from '@/components/booking-link';
+import { CollaboratorAvatars } from '@/components/collaborator-avatars';
 import { FeedbackForm } from '@/components/feedback-form';
 import { HoldCard } from '@/components/hold-card';
 import { ItineraryItemRow } from '@/components/itinerary-item';
@@ -23,7 +24,8 @@ import { Spacing } from '@/constants/theme';
 import { useAgentActivity } from '@/hooks/agent-activity';
 import { useApi } from '@/hooks/use-api';
 import { useTheme } from '@/hooks/use-theme';
-import { api, type TripDetail } from '@/lib/api';
+import { useTripSync } from '@/hooks/use-trip-sync';
+import { api, type ItineraryEvent, type TripDetail } from '@/lib/api';
 import { isDayTrip } from '@/lib/dates';
 import { TRIP_STATUS } from '@/lib/labels';
 
@@ -31,8 +33,12 @@ export default function TripScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const theme = useTheme();
   const { data: trip, error, refreshing, refresh, setData } = useApi(() => api.trip(id));
+  const { data: members } = useApi(() => api.tripMembers(id));
+  const { data: events } = useApi(() => api.tripEvents(id), 10000);
   const { promptFeedback } = useAgentActivity();
   const [editing, setEditing] = useState(false);
+
+  useTripSync(id);
 
   if (!trip) {
     return (
@@ -49,6 +55,12 @@ export default function TripScreen() {
   const openItem = (date: string, item?: string) =>
     router.push({ pathname: '/edit-item/[id]', params: { id: trip.id, date, ...(item && { item }) } });
 
+  const myRole = trip.membership?.role ?? 'viewer';
+  const isOwner = myRole === 'owner';
+  const canEdit = myRole === 'owner' || myRole === 'editor';
+
+  const recentEvents = (events ?? []).slice(0, 3);
+
   return (
     <Screen refreshing={refreshing} onRefresh={refresh}>
       <Stack.Screen options={{ title: trip.destination }} />
@@ -64,6 +76,12 @@ export default function TripScreen() {
           {trip.destination}, {trip.country} · {formatDateRange(trip.start_date, trip.end_date)}
           {isDayTrip(trip) ? ' · Day trip' : ''} · {trip.travelers} traveler{trip.travelers > 1 ? 's' : ''}
         </ThemedText>
+        {members && members.length > 0 && (
+          <CollaboratorAvatars
+            members={members}
+            onPress={() => router.push({ pathname: '/trip-members/[id]', params: { id: trip.id } })}
+          />
+        )}
         <ThemedText type="small">{trip.summary}</ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
           Why it fits: {trip.why_it_fits}
@@ -74,11 +92,13 @@ export default function TripScreen() {
               title="Chat with your agent"
               onPress={() => router.push({ pathname: '/chat/[id]', params: { id: trip.id } })}
             />
-            <Button
-              title="Edit dates & details"
-              variant="secondary"
-              onPress={() => router.push({ pathname: '/edit-trip/[id]', params: { id: trip.id } })}
-            />
+            {canEdit && (
+              <Button
+                title="Edit dates & details"
+                variant="secondary"
+                onPress={() => router.push({ pathname: '/edit-trip/[id]', params: { id: trip.id } })}
+              />
+            )}
           </>
         )}
       </Card>
@@ -102,9 +122,21 @@ export default function TripScreen() {
         />
       ))}
 
+      {recentEvents.length > 0 && (
+        <View style={styles.eventChips}>
+          {recentEvents.map((event: ItineraryEvent) => (
+            <View key={event.id} style={[styles.eventChip, { backgroundColor: theme.backgroundSelected }]}>
+              <ThemedText type="small" themeColor="textSecondary" style={styles.eventChipText}>
+                {event.author_name}: {event.summary}
+              </ThemedText>
+            </View>
+          ))}
+        </View>
+      )}
+
       <View style={styles.sectionRow}>
         <SectionTitle>Itinerary</SectionTitle>
-        {active && (
+        {active && canEdit && (
           <Chip
             label={editing ? 'Done' : 'Edit itinerary'}
             selected={editing}
@@ -177,7 +209,7 @@ export default function TripScreen() {
       </Card>
 
       <View style={styles.row}>
-        {active && (
+        {active && isOwner && (
           <Button
             title="Trip's over"
             variant="secondary"
@@ -189,23 +221,25 @@ export default function TripScreen() {
             }}
           />
         )}
-        <Button
-          title="Delete trip"
-          variant="danger"
-          onPress={() =>
-            Alert.alert('Delete this trip?', 'Its price watches, holds, and reminders are removed too.', [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Delete',
-                style: 'destructive',
-                onPress: async () => {
-                  await api.deleteTrip(trip.id);
-                  router.back();
+        {isOwner && (
+          <Button
+            title="Delete trip"
+            variant="danger"
+            onPress={() =>
+              Alert.alert('Delete this trip?', 'Its price watches, holds, and reminders are removed too.', [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete',
+                  style: 'destructive',
+                  onPress: async () => {
+                    await api.deleteTrip(trip.id);
+                    router.back();
+                  },
                 },
-              },
-            ])
-          }
-        />
+              ])
+            }
+          />
+        )}
       </View>
     </Screen>
   );
@@ -271,4 +305,7 @@ const styles = StyleSheet.create({
   amount: { minWidth: 64, textAlign: 'right', fontVariant: ['tabular-nums'] },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
   chip: { borderRadius: 999, paddingHorizontal: Spacing.three, paddingVertical: Spacing.one + 2 },
+  eventChips: { gap: Spacing.one },
+  eventChip: { borderRadius: 8, paddingHorizontal: Spacing.two, paddingVertical: Spacing.one },
+  eventChipText: { fontSize: 12 },
 });

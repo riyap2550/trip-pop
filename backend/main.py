@@ -27,9 +27,20 @@ from auth import (  # noqa: E402
     hash_password,
     verify_password,
 )
+import push  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("api")
+
+ROLE_ORDER = {"viewer": 0, "editor": 1, "owner": 2}
+
+
+def _require_member(state, trip_id, user_id, min_role="viewer"):
+    from store import user_role
+    role = user_role(state, trip_id, user_id)
+    if role is None or ROLE_ORDER.get(role, -1) < ROLE_ORDER[min_role]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    return role
 
 
 @asynccontextmanager
@@ -233,13 +244,16 @@ class FeedbackIn(BaseModel):
 
 
 @app.post("/plan")
-def plan(body: PlanIn):
+def plan(body: PlanIn, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    author_name = current_user.get("display_name", "")
+
     def check_docs_after(job):
         # Kick off the document check as soon as the trip exists.
         docs_job = start_job("documents", agent.check_documents, job["result"]["trip_id"])
         job["result"]["documents_job_id"] = docs_job["id"]
 
-    return start_job("plan", agent.plan_trip, body.goal, then=check_docs_after)
+    return start_job("plan", agent.plan_trip, body.goal, user_id, author_name, then=check_docs_after)
 
 
 def _check_docs_if_rescheduled(job):
@@ -260,26 +274,111 @@ def _edit(fn, *args):
 
 
 @app.patch("/trips/{trip_id}")
-def patch_trip(trip_id: str, body: TripPatch):
+def patch_trip(trip_id: str, body: TripPatch, current_user: dict = Depends(get_current_user)):
     """Edit a trip's title, budget, travelers, or dates. Runs as a job because new dates re-price the trip."""
+    with store.transaction() as state:
+        _require_member(state, trip_id, current_user["id"], min_role="editor")
     trip = _trip_or_404(trip_id)
     changes = _edit(agent.validate_trip_changes, trip, body.model_dump(exclude_none=True))
     return start_job("edit", agent.update_trip, trip_id, changes, then=_check_docs_if_rescheduled)
 
 
 @app.post("/trips/{trip_id}/days/{day}/items")
-def add_item(trip_id: str, day: str, body: ItemIn):
-    return _edit(agent.add_item, trip_id, day, body.model_dump(exclude_none=True))
+def add_item(trip_id: str, day: str, body: ItemIn, current_user: dict = Depends(get_current_user)):
+    with store.transaction() as check_state:
+        _require_member(check_state, trip_id, current_user["id"], min_role="editor")
+    item_title = body.title or "item"
+    result = _edit(agent.add_item, trip_id, day, body.model_dump(exclude_none=True))
+    with store.transaction() as state:
+        # Find the newly-added item (last in day)
+        trip_obj = store.find(state["trips"], trip_id)
+        day_obj = next((d for d in trip_obj["days"] if d["date"] == day), None) if trip_obj else None
+        item_id = day_obj["items"][-1]["id"] if day_obj and day_obj["items"] else None
+        event = {
+            "id": store.new_id("evt"),
+            "trip_id": trip_id,
+            "at": datetime.utcnow().isoformat(),
+            "action": "add",
+            "item_id": item_id,
+            "day_date": day,
+            "author_user_id": current_user["id"],
+            "author_name": current_user.get("display_name", "Someone"),
+            "summary": f"Added '{item_title}'"
+        }
+        state["itinerary_events"].append(event)
+        trip_events = [e for e in state["itinerary_events"] if e["trip_id"] == trip_id]
+        if len(trip_events) > 500:
+            oldest = sorted(trip_events, key=lambda e: e["at"])[0]
+            state["itinerary_events"].remove(oldest)
+    push.notify_trip_collaborators(
+        store.read(), trip_id, current_user["id"],
+        "Itinerary updated", f"{current_user.get('display_name', 'Someone')} added '{item_title}'"
+    )
+    return result
 
 
 @app.patch("/trips/{trip_id}/days/{day}/items/{item_id}")
-def patch_item(trip_id: str, day: str, item_id: str, body: ItemIn):
-    return _edit(agent.edit_item, trip_id, day, item_id, body.model_dump(exclude_none=True, exclude={"category"}))
+def patch_item(trip_id: str, day: str, item_id: str, body: ItemIn, current_user: dict = Depends(get_current_user)):
+    with store.transaction() as state:
+        _require_member(state, trip_id, current_user["id"], min_role="editor")
+    result = _edit(agent.edit_item, trip_id, day, item_id, body.model_dump(exclude_none=True, exclude={"category"}))
+    item_title = body.title or item_id
+    with store.transaction() as state:
+        event = {
+            "id": store.new_id("evt"),
+            "trip_id": trip_id,
+            "at": datetime.utcnow().isoformat(),
+            "action": "edit",
+            "item_id": item_id,
+            "day_date": day,
+            "author_user_id": current_user["id"],
+            "author_name": current_user.get("display_name", "Someone"),
+            "summary": f"Edited '{item_title}'"
+        }
+        state["itinerary_events"].append(event)
+        trip_events = [e for e in state["itinerary_events"] if e["trip_id"] == trip_id]
+        if len(trip_events) > 500:
+            oldest = sorted(trip_events, key=lambda e: e["at"])[0]
+            state["itinerary_events"].remove(oldest)
+    push.notify_trip_collaborators(
+        store.read(), trip_id, current_user["id"],
+        "Itinerary updated", f"{current_user.get('display_name', 'Someone')} edited '{item_title}'"
+    )
+    return result
 
 
 @app.delete("/trips/{trip_id}/days/{day}/items/{item_id}")
-def remove_item(trip_id: str, day: str, item_id: str):
-    return _edit(agent.delete_item, trip_id, day, item_id)
+def remove_item(trip_id: str, day: str, item_id: str, current_user: dict = Depends(get_current_user)):
+    with store.transaction() as state:
+        _require_member(state, trip_id, current_user["id"], min_role="editor")
+        # Find item title before deletion
+        trip_obj = store.find(state["trips"], trip_id)
+        day_obj = next((d for d in trip_obj["days"] if d["date"] == day), None) if trip_obj else None
+        item_obj = next((i for i in day_obj["items"] if i["id"] == item_id), None) if day_obj else None
+        item_title = item_obj["title"] if item_obj else item_id
+    result = _edit(agent.delete_item, trip_id, day, item_id)
+    with store.transaction() as state:
+        event = {
+            "id": store.new_id("evt"),
+            "trip_id": trip_id,
+            "at": datetime.utcnow().isoformat(),
+            "action": "delete",
+            "item_id": item_id,
+            "day_date": day,
+            "author_user_id": current_user["id"],
+            "author_name": current_user.get("display_name", "Someone"),
+            "summary": f"Removed '{item_title}'"
+        }
+        state["itinerary_events"].append(event)
+        trip_events = [e for e in state["itinerary_events"] if e["trip_id"] == trip_id]
+        if len(trip_events) > 500:
+            oldest = sorted(trip_events, key=lambda e: e["at"])[0]
+            state["itinerary_events"].remove(oldest)
+    push.notify_trip_collaborators(
+        store.read(), trip_id, current_user["id"],
+        "Itinerary updated", f"{current_user.get('display_name', 'Someone')} removed '{item_title}'"
+    )
+    return result
 
 
 @app.post("/trips/{trip_id}/chat")
@@ -327,17 +426,26 @@ def _read_with_current_statuses() -> dict:
 
 
 @app.get("/trips")
-def list_trips():
-    return _read_with_current_statuses()["trips"]
+def list_trips(current_user: dict = Depends(get_current_user)):
+    state = _read_with_current_statuses()
+    uid = current_user["id"]
+    member_trip_ids = {m["trip_id"] for m in state.get("memberships", []) if m["user_id"] == uid}
+    return [t for t in state["trips"] if t.get("owner_user_id") == uid or t["id"] in member_trip_ids]
 
 
 @app.get("/trips/{trip_id}")
-def get_trip(trip_id: str):
+def get_trip(trip_id: str, current_user: dict = Depends(get_current_user)):
     state = _read_with_current_statuses()
-    trip = _trip_or_404(trip_id)
+    _require_member(state, trip_id, current_user["id"], min_role="viewer")
+    trip = store.find(state["trips"], trip_id)
+    if not trip:
+        raise HTTPException(404, "Trip not found")
+    members = store.find_memberships(state, trip_id)
+    role = store.user_role(state, trip_id, current_user["id"])
     return {**trip,
             "documents": [d for d in state["documents"] if d["trip_id"] == trip_id],
-            "holds": [h for h in state["holds"] if h.get("trip_id") == trip_id]}
+            "holds": [h for h in state["holds"] if h.get("trip_id") == trip_id],
+            "membership": {"role": role, "members_count": len(members)}}
 
 
 @app.post("/trips/{trip_id}/end")
@@ -370,11 +478,159 @@ def snooze_feedback(trip_id: str):
 
 
 @app.delete("/trips/{trip_id}")
-def delete_trip(trip_id: str):
+def delete_trip(trip_id: str, current_user: dict = Depends(get_current_user)):
     with store.transaction() as state:
+        _require_member(state, trip_id, current_user["id"], min_role="owner")
         state["trips"] = [t for t in state["trips"] if t["id"] != trip_id]
         for key in ("watches", "alerts", "holds", "documents"):
             state[key] = [x for x in state[key] if x.get("trip_id") != trip_id]
+        state["memberships"] = [m for m in state["memberships"] if m["trip_id"] != trip_id]
+        state["itinerary_events"] = [e for e in state["itinerary_events"] if e["trip_id"] != trip_id]
+    return {"ok": True}
+
+
+# --- Group trips: members, invites, events -----------------------------------------------
+
+class InviteIn(BaseModel):
+    phone_number: str
+    role: str = "viewer"
+
+
+class MemberRolePatch(BaseModel):
+    role: str
+
+
+class PushTokenIn(BaseModel):
+    token: str
+    platform: str
+
+
+@app.get("/trips/{trip_id}/members")
+def list_members(trip_id: str, current_user: dict = Depends(get_current_user)):
+    state = store.read()
+    _require_member(state, trip_id, current_user["id"], min_role="viewer")
+    return store.find_memberships(state, trip_id)
+
+
+@app.post("/trips/{trip_id}/invites")
+def create_invite(trip_id: str, body: InviteIn, current_user: dict = Depends(get_current_user)):
+    with store.transaction() as state:
+        _require_member(state, trip_id, current_user["id"], min_role="owner")
+        trip = store.find(state["trips"], trip_id)
+        if not trip:
+            raise HTTPException(404, "Trip not found")
+        token = secrets.token_hex(16)
+        url = f"trippop://invite/{token}"
+        invite = {
+            "id": store.new_id("inv"),
+            "token": token,
+            "trip_id": trip_id,
+            "inviter_user_id": current_user["id"],
+            "phone_number": body.phone_number,
+            "role": body.role,
+            "created_at": datetime.utcnow().isoformat(),
+            "expires_at": (datetime.utcnow() + timedelta(hours=48)).isoformat(),
+            "used": False,
+        }
+        state["invite_tokens"].append(invite)
+    print(f"[INVITE SMS STUB] Send to {body.phone_number}: {url}")
+    return {"url": url, "token": token}
+
+
+@app.get("/invites/{token}")
+def get_invite(token: str):
+    state = store.read()
+    invite = next((i for i in state.get("invite_tokens", []) if i["token"] == token), None)
+    if not invite:
+        raise HTTPException(404, "Invite not found")
+    trip = store.find(state["trips"], invite["trip_id"])
+    inviter = next((u for u in state["users"] if u["id"] == invite["inviter_user_id"]), None)
+    expired = invite.get("used", False) or datetime.utcnow().isoformat() > invite["expires_at"]
+    return {
+        "trip_id": invite["trip_id"],
+        "trip_title": trip["title"] if trip else "",
+        "inviter_name": inviter.get("display_name", "") if inviter else "",
+        "role": invite["role"],
+        "expired": expired,
+    }
+
+
+@app.post("/invites/{token}/accept")
+def accept_invite(token: str, current_user: dict = Depends(get_current_user)):
+    with store.transaction() as state:
+        invite = next((i for i in state.get("invite_tokens", []) if i["token"] == token), None)
+        if not invite:
+            raise HTTPException(404, "Invite not found")
+        if invite.get("used"):
+            raise HTTPException(400, "Invite has already been used")
+        if datetime.utcnow().isoformat() > invite["expires_at"]:
+            raise HTTPException(400, "Invite has expired")
+        trip_id = invite["trip_id"]
+        already = store.user_role(state, trip_id, current_user["id"])
+        if not already:
+            state["memberships"].append({
+                "id": store.new_id("mem"),
+                "trip_id": trip_id,
+                "user_id": current_user["id"],
+                "role": invite["role"],
+                "invited_by_user_id": invite["inviter_user_id"],
+                "joined_at": datetime.utcnow().isoformat(),
+                "display_name": current_user.get("display_name", ""),
+                "avatar_url": current_user.get("avatar_url"),
+            })
+        invite["used"] = True
+    return {"trip_id": trip_id}
+
+
+@app.delete("/trips/{trip_id}/members/{user_id}")
+def remove_member(trip_id: str, user_id: str, current_user: dict = Depends(get_current_user)):
+    with store.transaction() as state:
+        _require_member(state, trip_id, current_user["id"], min_role="owner")
+        state["memberships"] = [
+            m for m in state["memberships"]
+            if not (m["trip_id"] == trip_id and m["user_id"] == user_id)
+        ]
+    return {"ok": True}
+
+
+@app.patch("/trips/{trip_id}/members/{user_id}")
+def update_member_role(trip_id: str, user_id: str, body: MemberRolePatch, current_user: dict = Depends(get_current_user)):
+    with store.transaction() as state:
+        _require_member(state, trip_id, current_user["id"], min_role="owner")
+        member = next(
+            (m for m in state["memberships"] if m["trip_id"] == trip_id and m["user_id"] == user_id),
+            None
+        )
+        if not member:
+            raise HTTPException(404, "Member not found")
+        member["role"] = body.role
+    return {"ok": True}
+
+
+@app.get("/trips/{trip_id}/events")
+def get_trip_events(trip_id: str, current_user: dict = Depends(get_current_user)):
+    state = store.read()
+    _require_member(state, trip_id, current_user["id"], min_role="viewer")
+    events = [e for e in state.get("itinerary_events", []) if e["trip_id"] == trip_id]
+    events_sorted = sorted(events, key=lambda e: e["at"], reverse=True)
+    return events_sorted[:50]
+
+
+@app.post("/users/push-token")
+def register_push_token(body: PushTokenIn, current_user: dict = Depends(get_current_user)):
+    with store.transaction() as state:
+        existing = next((pt for pt in state.get("push_tokens", []) if pt["user_id"] == current_user["id"]), None)
+        if existing:
+            existing["token"] = body.token
+            existing["platform"] = body.platform
+            existing["updated_at"] = datetime.utcnow().isoformat()
+        else:
+            state["push_tokens"].append({
+                "user_id": current_user["id"],
+                "token": body.token,
+                "platform": body.platform,
+                "updated_at": datetime.utcnow().isoformat(),
+            })
     return {"ok": True}
 
 

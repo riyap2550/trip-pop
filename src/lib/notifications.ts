@@ -1,6 +1,8 @@
 import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 
 import type { Alert, TravelDocument } from '@/lib/api';
+import { api } from '@/lib/api';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -48,6 +50,23 @@ export async function syncDocumentReminders(docs: TravelDocument[]) {
 }
 
 const notifiedAlerts = new Set<string>();
+
+/**
+ * Request push notification permission, get the Expo push token, and register it with the backend.
+ * Safe to call on every authenticated session start — exits early if no permission or no real device.
+ */
+export async function registerExpoPushToken(): Promise<void> {
+  // expo-device is not in the dependency list; use Platform.OS !== 'web' as the device check
+  if (Platform.OS === 'web') return;
+  const { status } = await Notifications.requestPermissionsAsync();
+  if (status !== 'granted') return;
+  try {
+    const tokenData = await Notifications.getExpoPushTokenAsync();
+    await api.registerPushToken(tokenData.data, Platform.OS);
+  } catch {
+    // Swallow errors — push token registration is best-effort
+  }
+}
 
 /** Show a notification for each deal alert we haven't shown yet in this session. */
 export async function notifyDealAlerts(alerts: Alert[], initial: boolean) {

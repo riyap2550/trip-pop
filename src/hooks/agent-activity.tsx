@@ -5,7 +5,7 @@ import { AppState } from 'react-native';
 
 import { api, type Trip } from '@/lib/api';
 import { onDataChanged } from '@/lib/data-events';
-import { notifyDealAlerts, syncDocumentReminders } from '@/lib/notifications';
+import { notifyDealAlerts, registerExpoPushToken, syncDocumentReminders } from '@/lib/notifications';
 import { useAuth } from '@/hooks/use-auth';
 
 type Activity = {
@@ -79,6 +79,8 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
     // refresh() only sets state after its network requests resolve.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh();
+    // Register push token once per authenticated session (best-effort, errors are swallowed)
+    registerExpoPushToken().catch(() => {});
     const timer = setInterval(refresh, POLL_MS);
     const sub = AppState.addEventListener('change', (s) => s === 'active' && refresh());
     return () => {

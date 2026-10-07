@@ -4,4 +4,6 @@ uvicorn[standard]>=0.30
 python-dotenv>=1.0
 truststore>=0.10
 passlib[bcrypt]>=1.7
+bcrypt>=4.0,<5
 python-jose[cryptography]>=3.3
+exponent-server-sdk>=2.0.0

@@ -24,12 +24,17 @@ export default function LoginScreen() {
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async () => {
     setError(null);
+    if (mode === 'signup' && password !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
     setLoading(true);
     try {
       if (mode === 'signin') {
@@ -77,6 +82,7 @@ export default function LoginScreen() {
             onChange={(v) => {
               setMode(v);
               setError(null);
+              setConfirmPassword('');
             }}
           />
 
@@ -107,15 +113,27 @@ export default function LoginScreen() {
             placeholder="Password"
             secureTextEntry
             autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-            returnKeyType="done"
-            onSubmitEditing={handleSubmit}
+            returnKeyType={mode === 'signup' ? 'next' : 'done'}
+            onSubmitEditing={mode === 'signin' ? handleSubmit : undefined}
           />
+
+          {mode === 'signup' && (
+            <Input
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              placeholder="Confirm password"
+              secureTextEntry
+              autoComplete="new-password"
+              returnKeyType="done"
+              onSubmitEditing={handleSubmit}
+            />
+          )}
 
           <Button
             title={loading ? '...' : mode === 'signin' ? 'Sign in' : 'Create account'}
             onPress={handleSubmit}
             loading={loading}
-            disabled={loading || !email || !password || (mode === 'signup' && !displayName)}
+            disabled={loading || !email || !password || (mode === 'signup' && (!displayName || !confirmPassword))}
           />
 
           <ErrorText message={error} />
@@ -163,6 +181,7 @@ const styles = StyleSheet.create({
   brandName: {
     fontFamily: DisplayFonts.bold,
     fontSize: 38,
+    lineHeight: 46,
   },
   formContainer: {
     paddingHorizontal: Spacing.three,

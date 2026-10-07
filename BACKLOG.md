@@ -21,7 +21,7 @@
 **Goal**: Multiple travelers can co-plan a trip, see each other's additions to the itinerary, and coordinate on a shared calendar.
 
 **Scope**:
-- Create a trip and invite collaborators by email
+- Create a trip and invite collaborators by a link and sending it to their number
 - Real-time (or near-real-time) itinerary sync across devices
 - Permission model: owner vs. viewer vs. editor roles
 - Conflict UI: show who edited an item and when

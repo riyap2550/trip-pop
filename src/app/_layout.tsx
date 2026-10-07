@@ -6,7 +6,7 @@ import {
   CormorantGaramond_700Bold,
   useFonts,
 } from '@expo-google-fonts/cormorant-garamond';
-import { Redirect, Stack, ThemeProvider } from 'expo-router';
+import { Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useColorScheme } from 'react-native';
 
@@ -34,31 +34,46 @@ function InnerLayout() {
   // On a load error, carry on with system fonts rather than blocking the app.
   if ((!fontsLoaded && !fontError) || auth.status === 'loading') return null;
 
-  if (auth.status === 'unauthenticated') return <Redirect href="/login" />;
+  const signedIn = auth.status === 'authenticated';
+  // The splash overlay hides the native splash once signed in; the login screen has no overlay, so hide it here.
+  if (!signedIn) SplashScreen.hideAsync();
 
   return (
     <ThemeProvider value={NavigationThemes[colorScheme === 'dark' ? 'dark' : 'light']}>
       <AgentActivityProvider>
         <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="login" options={{ headerShown: false, gestureEnabled: false }} />
-          <Stack.Screen name="profile" options={{ presentation: 'modal' }} />
-          <Stack.Screen name="feedback/[id]" options={{ presentation: 'modal' }} />
-          <Stack.Screen
-            name="edit-trip/[id]"
-            options={{ ...sheetScreenOptions, title: 'Edit trip', headerRight: () => <ModalClose label="Cancel" /> }}
-          />
-          <Stack.Screen
-            name="edit-item/[id]"
-            options={{ ...sheetScreenOptions, title: 'Itinerary item', headerRight: () => <ModalClose label="Cancel" /> }}
-          />
-          <Stack.Screen
-            name="chat/[id]"
-            options={{ ...sheetScreenOptions, title: 'Chat with TripPop', headerRight: () => <ModalClose label="Done" /> }}
-          />
+          <Stack.Protected guard={!signedIn}>
+            <Stack.Screen name="login" options={{ gestureEnabled: false }} />
+          </Stack.Protected>
+          <Stack.Protected guard={signedIn}>
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="profile" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="feedback/[id]" options={{ presentation: 'modal' }} />
+            <Stack.Screen
+              name="edit-trip/[id]"
+              options={{ ...sheetScreenOptions, title: 'Edit trip', headerRight: () => <ModalClose label="Cancel" /> }}
+            />
+            <Stack.Screen
+              name="edit-item/[id]"
+              options={{ ...sheetScreenOptions, title: 'Itinerary item', headerRight: () => <ModalClose label="Cancel" /> }}
+            />
+            <Stack.Screen
+              name="chat/[id]"
+              options={{ ...sheetScreenOptions, title: 'Chat with TripPop', headerRight: () => <ModalClose label="Done" /> }}
+            />
+            <Stack.Screen
+              name="trip-members/[id]"
+              options={{ ...sheetScreenOptions, title: 'Trip Members', headerRight: () => <ModalClose label="Done" /> }}
+            />
+          </Stack.Protected>
+          <Stack.Screen name="invite/[token]" options={{ headerShown: true, title: 'Trip Invite' }} />
         </Stack>
-        <FeedbackPrompt />
-        <AnimatedSplashOverlay />
+        {signedIn && (
+          <>
+            <FeedbackPrompt />
+            <AnimatedSplashOverlay />
+          </>
+        )}
       </AgentActivityProvider>
     </ThemeProvider>
   );

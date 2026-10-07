@@ -11,7 +11,17 @@ import { formatTime } from '@/lib/calendar';
 import { CATEGORY_ICON } from '@/lib/labels';
 
 /** One row of a trip day: time, what it is, cost, and a booking link. With onEdit, the row opens its editor. */
-export function ItineraryItemRow({ item, onEdit }: { item: ItineraryItem; onEdit?: () => void }) {
+export function ItineraryItemRow({
+  item,
+  onEdit,
+  addedByName,
+  collaboratorColor,
+}: {
+  item: ItineraryItem;
+  onEdit?: () => void;
+  addedByName?: string;
+  collaboratorColor?: string;
+}) {
   const theme = useTheme();
   const row = (
     <View style={styles.item}>
@@ -26,6 +36,16 @@ export function ItineraryItemRow({ item, onEdit }: { item: ItineraryItem; onEdit
           <ThemedText type="small" themeColor="textSecondary">
             {item.notes}
           </ThemedText>
+        )}
+        {!!addedByName && (
+          <View style={styles.addedByRow}>
+            {!!collaboratorColor && (
+              <View style={[styles.dot, { backgroundColor: collaboratorColor }]} />
+            )}
+            <ThemedText type="small" themeColor="textSecondary" style={styles.addedByText}>
+              Added by {addedByName}
+            </ThemedText>
+          </View>
         )}
         <View style={styles.row}>
           {item.est_cost_usd > 0 && (
@@ -63,4 +83,7 @@ const styles = StyleSheet.create({
   time: { width: 68, fontVariant: ['tabular-nums'] },
   pencil: { marginTop: 4 },
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, flexWrap: 'wrap' },
+  addedByRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
+  dot: { width: 8, height: 8, borderRadius: 4 },
+  addedByText: { fontSize: 11 },
 });

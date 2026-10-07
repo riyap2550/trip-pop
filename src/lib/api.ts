@@ -21,6 +21,36 @@ export function setTokenGetter(fn: () => Promise<string | null>): void {
 
 export type ItemCategory = 'activity' | 'meal' | 'transport' | 'lodging' | 'flight' | 'free_time';
 
+export type MemberRole = 'owner' | 'editor' | 'viewer';
+
+export type TripMember = {
+  user_id: string;
+  display_name: string;
+  avatar_url: string | null;
+  role: MemberRole;
+  joined_at: string;
+};
+
+export type InviteInfo = {
+  trip_id: string;
+  trip_title: string;
+  inviter_name: string;
+  role: MemberRole;
+  expired: boolean;
+};
+
+export type ItineraryEvent = {
+  id: string;
+  trip_id: string;
+  at: string;
+  action: 'add' | 'edit' | 'delete' | 'chat_change';
+  item_id: string | null;
+  day_date: string | null;
+  author_user_id: string;
+  author_name: string;
+  summary: string;
+};
+
 export type ItineraryItem = {
   id: string;
   time: string;
@@ -31,6 +61,8 @@ export type ItineraryItem = {
   place_name?: string;
   notes: string;
   booking_url: string | null;
+  added_by_user_id?: string;
+  added_by_name?: string;
 };
 
 export type TripStatus = 'planned' | 'booked' | 'in_progress' | 'awaiting_feedback' | 'completed';
@@ -84,7 +116,11 @@ export type Trip = {
   feedback_snoozed_until?: string;
 };
 
-export type TripDetail = Trip & { documents: TravelDocument[]; holds: Hold[] };
+export type TripDetail = Trip & {
+  documents: TravelDocument[];
+  holds: Hold[];
+  membership?: { role: MemberRole; members_count: number };
+};
 
 export type Watch = {
   id: string;
@@ -194,6 +230,8 @@ const post = <T>(path: string, body?: unknown) =>
   request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
 const patch = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
+const del = <T>(path: string, body?: unknown) =>
+  request<T>(path, { method: 'DELETE', body: body === undefined ? undefined : JSON.stringify(body) });
 
 export type AuthUser = { id: string; email: string; display_name: string; avatar_url: string | null };
 export type AuthResponse = { access_token: string; refresh_token: string; user: AuthUser };
@@ -238,4 +276,16 @@ export const api = {
   updateDocument: (id: string, done: boolean) => patch<TravelDocument>(`/documents/${id}`, { done }),
   profile: () => request<Profile>('/profile'),
   updateProfile: (body: Partial<Profile>) => patch<Profile>('/profile', body),
+  tripMembers: (tripId: string) => request<TripMember[]>(`/trips/${tripId}/members`),
+  inviteCollaborator: (tripId: string, phone: string, role: MemberRole) =>
+    post<{ url: string; token: string }>(`/trips/${tripId}/invites`, { phone_number: phone, role }),
+  inviteInfo: (token: string) => request<InviteInfo>(`/invites/${token}`),
+  acceptInvite: (token: string) => post<{ trip_id: string }>(`/invites/${token}/accept`),
+  removeMember: (tripId: string, userId: string) =>
+    del<void>(`/trips/${tripId}/members/${userId}`),
+  updateMemberRole: (tripId: string, userId: string, role: MemberRole) =>
+    patch<void>(`/trips/${tripId}/members/${userId}`, { role }),
+  tripEvents: (tripId: string) => request<ItineraryEvent[]>(`/trips/${tripId}/events`),
+  registerPushToken: (token: string, platform: string) =>
+    post<void>('/users/push-token', { token, platform }),
 };

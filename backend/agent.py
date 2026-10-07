@@ -314,7 +314,7 @@ def _check_day_trip(days: list[dict], start_date: str) -> None:
         raise ValueError("A day trip has no overnight stay. Remove the lodging items.")
 
 
-def _save_itinerary(created: list[str], **trip_in) -> dict:
+def _save_itinerary(created: list[str], current_user_id: str = "", author_name: str = "", **trip_in) -> dict:
     dest_id = trip_in["destination_id"]
     dest = providers.get_destination(dest_id)
     trip_in.setdefault("hotel_style", "mid")  # unused for day trips
@@ -343,7 +343,26 @@ def _save_itinerary(created: list[str], **trip_in) -> dict:
                                  "hotel": hotel["booking_url"] if hotel else None}
 
         if not existing:
+            trip["owner_user_id"] = current_user_id
             state["trips"].insert(0, trip)
+            if current_user_id:
+                # Create owner membership if not already present
+                already_member = any(
+                    m["trip_id"] == trip["id"] and m["user_id"] == current_user_id
+                    for m in state.get("memberships", [])
+                )
+                if not already_member:
+                    owner_user = next((u for u in state["users"] if u["id"] == current_user_id), {})
+                    state["memberships"].append({
+                        "id": store.new_id("mem"),
+                        "trip_id": trip["id"],
+                        "user_id": current_user_id,
+                        "role": "owner",
+                        "invited_by_user_id": None,
+                        "joined_at": store.now_iso(),
+                        "display_name": owner_user.get("display_name", author_name),
+                        "avatar_url": owner_user.get("avatar_url"),
+                    })
         _create_watches(state, trip, flight, hotel,
                         trip_in.get("flight_target_price"), trip_in.get("hotel_target_nightly"))
 
@@ -353,14 +372,14 @@ def _save_itinerary(created: list[str], **trip_in) -> dict:
             "over_budget_by": max(round(total - trip["budget_usd"]), 0)}
 
 
-def plan_trip(goal: str, on_step: StepCallback) -> dict:
+def plan_trip(goal: str, current_user_id: str, author_name: str, on_step: StepCallback) -> dict:
     created: list[str] = []
     handlers = {
         "get_travel_profile": _public_profile,
         "research_destinations": providers.research_destinations,
         "add_destination": providers.add_destination,
         "quote_trip": _quote_trip,
-        "save_itinerary": lambda **kw: _save_itinerary(created, **kw),
+        "save_itinerary": lambda **kw: _save_itinerary(created, current_user_id=current_user_id, author_name=author_name, **kw),
     }
     prompt = f"Today is {date.today().isoformat()}.\n\nMy goal: {goal}"
     summary = run_agent(PLAN_SYSTEM, prompt, _plan_tools(), handlers, on_step, effort="high")
@@ -730,7 +749,7 @@ def chat_trip(trip_id: str, message: str, local_time: str | None, on_step: StepC
         return {"hold_id": hold["id"], "status": "pending_approval"}
 
     def rebuild_trip(**trip_in):
-        result = _save_itinerary([], **{**trip_in, "trip_id": trip_id})  # always overwrites this trip
+        result = _save_itinerary([], current_user_id="", author_name="", **{**trip_in, "trip_id": trip_id})  # always overwrites this trip
         with store.transaction() as state:
             t = _find_trip(state, trip_id)
             t["changes"].insert(0, {"at": store.now_iso(), "date": t["start_date"], "reason": message,
