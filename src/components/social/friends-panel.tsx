@@ -193,7 +193,7 @@ function PersonRow({ user, children }: { user: UserCard; children: ReactNode }) 
         accessibilityRole="button"
         accessibilityLabel={`${user.display_name}'s profile`}
         style={({ pressed }) => [styles.who, { opacity: pressed ? 0.7 : 1 }]}>
-        <UserAvatar userId={user.id} name={user.display_name} size={36} />
+        <UserAvatar userId={user.id} name={user.display_name} avatarUrl={user.avatar_url} size={36} />
         <ThemedText type="smallBold" style={styles.name} numberOfLines={1}>
           {user.display_name || 'Traveler'}
         </ThemedText>

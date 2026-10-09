@@ -1,6 +1,8 @@
+import * as ImagePicker from 'expo-image-picker';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { UserAvatar } from '@/components/social/user-avatar';
 import { ThemedText } from '@/components/themed-text';
 import { Button, Card, ErrorText, Input, Screen, Segmented } from '@/components/ui/primitives';
 import { Spacing } from '@/constants/theme';
@@ -40,6 +42,8 @@ export default function ProfileScreen() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
 
   const handleSignOut = async () => {
     setSigningOut(true);
@@ -47,6 +51,40 @@ export default function ProfileScreen() {
       await auth.signOut();
     } finally {
       setSigningOut(false);
+    }
+  };
+
+  const changeAvatar = async () => {
+    setAvatarError(null);
+    // No permission request needed: the system picker only hands over what the user selects.
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      // Below 1 the picker re-encodes, which also turns HEIC into JPEG the server accepts
+      quality: 0.8,
+      preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+    });
+    if (result.canceled) return;
+    setAvatarBusy(true);
+    try {
+      auth.updateUser(await api.uploadAvatar(result.assets[0]));
+    } catch (e) {
+      setAvatarError((e as Error).message);
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const removeAvatar = async () => {
+    setAvatarError(null);
+    setAvatarBusy(true);
+    try {
+      auth.updateUser(await api.deleteAvatar());
+    } catch (e) {
+      setAvatarError((e as Error).message);
+    } finally {
+      setAvatarBusy(false);
     }
   };
 
@@ -101,12 +139,32 @@ export default function ProfileScreen() {
     <Screen refreshing={refreshing} onRefresh={refresh}>
       {authUser && (
         <Card>
-          <View style={profileStyles.userInfo}>
-            <ThemedText type="heading">{authUser.display_name || authUser.email}</ThemedText>
-            <ThemedText type="small" themeColor="textSecondary">
-              {authUser.email}
-            </ThemedText>
+          <View style={profileStyles.identity}>
+            <UserAvatar
+              userId={authUser.id}
+              name={authUser.display_name || authUser.email}
+              avatarUrl={authUser.avatar_url}
+              size={72}
+            />
+            <View style={profileStyles.userInfo}>
+              <ThemedText type="heading">{authUser.display_name || authUser.email}</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                {authUser.email}
+              </ThemedText>
+            </View>
           </View>
+          <View style={profileStyles.avatarActions}>
+            <Button
+              title={authUser.avatar_url ? 'Change photo' : 'Add profile photo'}
+              variant="secondary"
+              onPress={changeAvatar}
+              loading={avatarBusy}
+            />
+            {!!authUser.avatar_url && (
+              <Button title="Remove photo" variant="secondary" onPress={removeAvatar} disabled={avatarBusy} />
+            )}
+          </View>
+          <ErrorText message={avatarError} />
           <Button
             title={signingOut ? '...' : 'Sign out'}
             variant="secondary"
@@ -184,8 +242,17 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 const profileStyles = StyleSheet.create({
+  identity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
   userInfo: {
+    flex: 1,
     gap: Spacing.one,
+  },
+  avatarActions: {
+    gap: Spacing.two,
   },
   field: {
     gap: Spacing.one,

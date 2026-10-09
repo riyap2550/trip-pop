@@ -45,7 +45,7 @@ export function FeedPostCard({ post, onDeleted }: { post: FeedPost; onDeleted?: 
           accessibilityRole="button"
           accessibilityLabel={`${post.author.display_name}'s profile`}
           style={({ pressed }) => [styles.author, { opacity: pressed ? 0.7 : 1 }]}>
-          <UserAvatar userId={post.author.id} name={post.author.display_name} size={36} />
+          <UserAvatar userId={post.author.id} name={post.author.display_name} avatarUrl={post.author.avatar_url} size={36} />
           <View style={styles.authorText}>
             <ThemedText type="smallBold">{post.author.display_name || 'Traveler'}</ThemedText>
             <ThemedText type="small" themeColor="textSecondary">

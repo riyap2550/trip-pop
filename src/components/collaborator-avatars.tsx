@@ -1,32 +1,25 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 
+import { UserAvatar } from '@/components/social/user-avatar';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { TripMember } from '@/lib/api';
-import { getAvatarTextColor, getCollaboratorColor, getInitials } from '@/lib/avatar';
 
 const AVATAR_SIZE = 32;
 const OVERLAP = 10;
 
 function Avatar({ member, index }: { member: TripMember; index: number }) {
-  const bg = getCollaboratorColor(member.user_id);
-  const textColor = getAvatarTextColor(bg);
-
   return (
     <View
-      style={[
-        styles.avatar,
-        {
-          backgroundColor: bg,
-          marginLeft: index === 0 ? 0 : -OVERLAP,
-          zIndex: index,
-        },
-      ]}
+      style={[styles.avatar, { marginLeft: index === 0 ? 0 : -OVERLAP, zIndex: index }]}
       accessibilityLabel={`${member.display_name} (${member.role})`}>
-      <ThemedText type="small" style={[styles.initials, { color: textColor }]}>
-        {getInitials(member.display_name)}
-      </ThemedText>
+      <UserAvatar
+        userId={member.user_id}
+        name={member.display_name}
+        avatarUrl={member.avatar_url}
+        size={AVATAR_SIZE - 4}
+      />
     </View>
   );
 }

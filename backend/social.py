@@ -18,6 +18,7 @@ router = APIRouter()
 
 MAX_CAPTION = 500
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
+MAX_AVATAR_BYTES = 5 * 1024 * 1024
 MAX_PHOTOS_PER_TRIP = 300
 SEARCH_LIMIT = 20
 
@@ -25,6 +26,10 @@ SEARCH_LIMIT = 20
 def photos_dir() -> Path:
     # Computed on each call so tests that move DATA_FILE also move the photos
     return store.DATA_FILE.parent / "photos"
+
+
+def avatars_dir() -> Path:
+    return store.DATA_FILE.parent / "avatars"
 
 
 def _now() -> str:
@@ -41,6 +46,10 @@ def _user(state: dict, uid: str) -> dict | None:
 def _name(state: dict, uid: str) -> str:
     user = _user(state, uid)
     return (user or {}).get("display_name") or "Traveler"
+
+
+def _avatar(state: dict, uid: str) -> str | None:
+    return (_user(state, uid) or {}).get("avatar_url")
 
 
 def _friendship(state: dict, a: str, b: str) -> dict | None:
@@ -60,7 +69,8 @@ def _friendship_status(state: dict, viewer_id: str, other_id: str) -> tuple[str,
 def _user_card(state: dict, viewer_id: str, uid: str) -> dict:
     """Never includes email: search can find people by it, but nothing ever shows it."""
     friendship, request_id = _friendship_status(state, viewer_id, uid)
-    return {"id": uid, "display_name": _name(state, uid), "friendship": friendship, "request_id": request_id}
+    return {"id": uid, "display_name": _name(state, uid), "avatar_url": _avatar(state, uid),
+            "friendship": friendship, "request_id": request_id}
 
 
 def _is_trip_owner(state: dict, trip_id: str, uid: str) -> bool:
@@ -81,7 +91,8 @@ def _photo_out(state: dict, photo: dict, viewer_id: str) -> dict:
         "created_at": photo["created_at"],
         "width": photo.get("width"),
         "height": photo.get("height"),
-        "uploader": {"id": photo["uploader_user_id"], "display_name": _name(state, photo["uploader_user_id"])},
+        "uploader": {"id": photo["uploader_user_id"], "display_name": _name(state, photo["uploader_user_id"]),
+                     "avatar_url": _avatar(state, photo["uploader_user_id"])},
         "can_delete": viewer_id == photo["uploader_user_id"] or _is_trip_owner(state, photo["trip_id"], viewer_id),
     }
 
@@ -100,7 +111,7 @@ def _trip_summary(state: dict, trip: dict, viewer_id: str) -> dict:
         "status": trip["status"],
         "privacy": trip.get("privacy", "friends"),
         "rating": (trip.get("feedback") or {}).get("rating"),  # the stars only, never the written feedback
-        "owner": {"id": owner_id, "display_name": _name(state, owner_id)},
+        "owner": {"id": owner_id, "display_name": _name(state, owner_id), "avatar_url": _avatar(state, owner_id)},
         "members_count": len(members),
         "photos_count": len(photos),
         "cover_photo_id": photos[0]["id"] if photos else None,
@@ -117,7 +128,8 @@ def _shared_trip(state: dict, trip: dict, viewer_id: str) -> dict:
                              "category": i.get("category", "activity"), "place_name": i.get("place_name")}
                             for i in d.get("items", [])]}
                  for d in trip.get("days", [])],
-        "members": [{"user_id": m["user_id"], "display_name": _name(state, m["user_id"])}
+        "members": [{"user_id": m["user_id"], "display_name": _name(state, m["user_id"]),
+                     "avatar_url": _avatar(state, m["user_id"])}
                     for m in store.find_memberships(state, trip["id"])],
         "photos": [_photo_out(state, p, viewer_id) for p in _trip_photos(state, trip["id"])],
     }
@@ -128,7 +140,8 @@ def _post_out(state: dict, post: dict, trip: dict, viewer_id: str) -> dict:
         "id": post["id"],
         "caption": post.get("caption", ""),
         "created_at": post["created_at"],
-        "author": {"id": post["author_user_id"], "display_name": _name(state, post["author_user_id"])},
+        "author": {"id": post["author_user_id"], "display_name": _name(state, post["author_user_id"]),
+                   "avatar_url": _avatar(state, post["author_user_id"])},
         "trip": _trip_summary(state, trip, viewer_id),
         "photos": [_photo_out(state, p, viewer_id) for p in _trip_photos(state, trip["id"])[:4]],
         "can_delete": viewer_id == post["author_user_id"] or _is_trip_owner(state, trip["id"], viewer_id),
@@ -285,7 +298,7 @@ def social_profile(user_id: str, current_user: dict = Depends(get_current_user))
     summaries = [_trip_summary(state, t, uid) for t in trips]
     friendship, request_id = _friendship_status(state, uid, user_id)
     return {
-        "user": {"id": user_id, "display_name": _name(state, user_id)},
+        "user": {"id": user_id, "display_name": _name(state, user_id), "avatar_url": _avatar(state, user_id)},
         "is_me": user_id == uid,
         "friendship": "none" if user_id == uid else friendship,
         "request_id": request_id,
@@ -463,3 +476,59 @@ def delete_photo(photo_id: str, current_user: dict = Depends(get_current_user)):
         state["photos"].remove(photo)
     (photos_dir() / photo["trip_id"] / photo["filename"]).unlink(missing_ok=True)
     return {"ok": True}
+
+
+# --- Profile picture -------------------------------------------------------------------------
+
+def _set_avatar(state: dict, uid: str, avatar_url: str | None, avatar_file: str | None) -> dict:
+    user = _user(state, uid)
+    user["avatar_url"], user["avatar_file"] = avatar_url, avatar_file
+    for m in state["memberships"]:  # trip member lists keep their own copy
+        if m["user_id"] == uid:
+            m["avatar_url"] = avatar_url
+    return user
+
+
+def _remove_avatar_files(uid: str) -> None:
+    for old in avatars_dir().glob(f"{uid}.*"):
+        old.unlink(missing_ok=True)
+
+
+@router.post("/me/avatar")
+def upload_avatar(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+    uid = current_user["id"]
+    data = file.file.read(MAX_AVATAR_BYTES + 1)
+    if len(data) > MAX_AVATAR_BYTES:
+        raise HTTPException(413, "Profile pictures can be up to 5 MB.")
+    kind = _image_type(data[:12])
+    if not kind:
+        raise HTTPException(415, "Only JPEG, PNG and WebP photos are supported.")
+    ext = kind[0]
+    with store.transaction() as state:
+        avatars_dir().mkdir(parents=True, exist_ok=True)
+        _remove_avatar_files(uid)
+        filename = f"{uid}.{ext}"
+        (avatars_dir() / filename).write_bytes(data)
+        # The version changes the URL, so clients don't keep showing a cached old picture
+        user = _set_avatar(state, uid, f"/users/{uid}/avatar?v={int(datetime.now(timezone.utc).timestamp())}", filename)
+        return {"id": uid, "email": user["email"], "display_name": user.get("display_name", ""),
+                "avatar_url": user["avatar_url"]}
+
+
+@router.delete("/me/avatar")
+def delete_avatar(current_user: dict = Depends(get_current_user)):
+    uid = current_user["id"]
+    with store.transaction() as state:
+        user = _set_avatar(state, uid, None, None)
+        _remove_avatar_files(uid)
+        return {"id": uid, "email": user["email"], "display_name": user.get("display_name", ""), "avatar_url": None}
+
+
+@router.get("/users/{user_id}/avatar")
+def get_avatar(user_id: str, current_user: dict = Depends(get_current_user)):
+    user = _user(store.read(), user_id)
+    path = avatars_dir() / user["avatar_file"] if user and user.get("avatar_file") else None
+    if not path or not path.is_file():
+        raise HTTPException(404, "No profile picture")
+    media_type = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}[path.suffix[1:]]
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=86400"})

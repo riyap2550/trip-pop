@@ -16,6 +16,8 @@ type AuthContextValue = AuthStatus & {
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, displayName: string) => Promise<void>;
   signOut: () => Promise<void>;
+  /** Replace the signed-in user after their account changes (e.g. a new profile picture). */
+  updateUser: (user: AuthUser) => void;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -103,12 +105,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthStatus({ status: 'unauthenticated' });
   }, []);
 
+  const updateUser = useCallback((user: AuthUser) => {
+    setAuthStatus((s) => (s.status === 'authenticated' ? { status: 'authenticated', user } : s));
+  }, []);
+
   const value: AuthContextValue = {
     ...authStatus,
     accessToken,
     signIn,
     signUp,
     signOut,
+    updateUser,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

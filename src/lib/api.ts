@@ -1,5 +1,6 @@
 import Constants from 'expo-constants';
 import type { ImageSource } from 'expo-image';
+import { File } from 'expo-file-system';
 import { Platform } from 'react-native';
 
 /**
@@ -242,7 +243,7 @@ export type Profile = {
 export type FriendshipStatus = 'none' | 'friends' | 'outgoing' | 'incoming';
 
 /** Another TripPop user as the viewer sees them. Never includes email. */
-export type UserCard = { id: string; display_name: string; friendship: FriendshipStatus; request_id: string | null };
+export type UserCard = { id: string; display_name: string; avatar_url: string | null; friendship: FriendshipStatus; request_id: string | null };
 
 export type FriendRequest = { id: string; user: UserCard; created_at: string };
 
@@ -260,7 +261,7 @@ export type Photo = {
   created_at: string;
   width: number | null;
   height: number | null;
-  uploader: { id: string; display_name: string };
+  uploader: { id: string; display_name: string; avatar_url: string | null };
   can_delete: boolean;
 };
 
@@ -275,7 +276,7 @@ export type TripSummary = {
   status: TripStatus;
   privacy: TripPrivacy;
   rating: number | null;
-  owner: { id: string; display_name: string };
+  owner: { id: string; display_name: string; avatar_url: string | null };
   members_count: number;
   photos_count: number;
   cover_photo_id: string | null;
@@ -290,7 +291,7 @@ export type SharedTrip = TripSummary & {
     theme: string;
     items: { id: string; time: string; title: string; category: ItemCategory; place_name?: string }[];
   }[];
-  members: { user_id: string; display_name: string }[];
+  members: { user_id: string; display_name: string; avatar_url: string | null }[];
   photos: Photo[];
 };
 
@@ -298,14 +299,14 @@ export type FeedPost = {
   id: string;
   caption: string;
   created_at: string;
-  author: { id: string; display_name: string };
+  author: { id: string; display_name: string; avatar_url: string | null };
   trip: TripSummary;
   photos: Photo[];
   can_delete: boolean;
 };
 
 export type SocialProfile = {
-  user: { id: string; display_name: string };
+  user: { id: string; display_name: string; avatar_url: string | null };
   is_me: boolean;
   friendship: FriendshipStatus;
   request_id: string | null;
@@ -340,8 +341,9 @@ async function request<T>(path: string, init?: RequestInit, isRetry = false): Pr
       ...init,
       headers,
     });
-  } catch {
-    throw new Error(`Can't reach TripPop at ${API_URL}. Is the backend running?`);
+  } catch (e) {
+    const cause = e instanceof Error && e.message ? ` (${e.message})` : '';
+    throw new Error(`Can't reach TripPop at ${API_URL}. Is the backend running?${cause}`);
   }
   if (res.status === 401 && !isRetry && !path.startsWith('/auth/')) {
     // Access tokens are short-lived. If another request already refreshed while this one was
@@ -369,14 +371,21 @@ const del = <T>(path: string, body?: unknown) =>
 export type AuthUser = { id: string; email: string; display_name: string; avatar_url: string | null };
 export type AuthResponse = { access_token: string; refresh_token: string; user: AuthUser };
 
+/**
+ * Adds a picked image to a multipart body. On phones the global fetch is expo/fetch, which rejects
+ * React Native's `{ uri, name, type }` parts ("Unsupported FormDataPart implementation"); it takes a File instead.
+ */
+async function appendImage(form: FormData, asset: PhotoAsset, fallbackName: string) {
+  if (Platform.OS === 'web') {
+    form.append('file', await (await fetch(asset.uri)).blob(), asset.fileName ?? fallbackName);
+  } else {
+    form.append('file', new File(asset.uri) as unknown as Blob);
+  }
+}
+
 async function uploadPhoto(tripId: string, dayDate: string, asset: PhotoAsset, caption = '') {
   const form = new FormData();
-  if (Platform.OS === 'web') {
-    form.append('file', await (await fetch(asset.uri)).blob(), asset.fileName ?? 'photo.jpg');
-  } else {
-    // React Native's FormData streams the file from its uri; this shape isn't in the DOM typings
-    form.append('file', { uri: asset.uri, name: asset.fileName ?? 'photo.jpg', type: asset.mimeType ?? 'image/jpeg' } as unknown as Blob);
-  }
+  await appendImage(form, asset, 'photo.jpg');
   form.append('day_date', dayDate);
   form.append('caption', caption);
   form.append('width', String(asset.width));
@@ -391,6 +400,19 @@ async function uploadPhoto(tripId: string, dayDate: string, asset: PhotoAsset, c
 export const photoImageSource = (photoId: string, token: string | null): ImageSource => ({
   uri: `${API_URL}/photos/${photoId}/file`,
   cacheKey: `photo:${photoId}`,
+  headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+});
+
+async function uploadAvatar(asset: PhotoAsset) {
+  const form = new FormData();
+  await appendImage(form, asset, 'avatar.jpg');
+  return request<AuthUser>('/me/avatar', { method: 'POST', body: form });
+}
+
+/** Profile pictures sit behind auth like photos. The URL carries a version, so a new picture is a new cache entry. */
+export const avatarImageSource = (avatarUrl: string, token: string | null): ImageSource => ({
+  uri: `${API_URL}${avatarUrl}`,
+  cacheKey: `avatar:${avatarUrl}`,
   headers: token ? { Authorization: `Bearer ${token}` } : undefined,
 });
 
@@ -464,5 +486,7 @@ export const api = {
   tripPhotos: (tripId: string) => request<Photo[]>(`/trips/${tripId}/photos`),
   photo: (photoId: string) => request<Photo>(`/photos/${photoId}`),
   uploadPhoto,
+  uploadAvatar,
+  deleteAvatar: () => del<AuthUser>('/me/avatar'),
   deletePhoto: (photoId: string) => del<{ ok: boolean }>(`/photos/${photoId}`),
 };

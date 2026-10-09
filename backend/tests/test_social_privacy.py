@@ -154,7 +154,7 @@ def test_shared_trip_leaves_out_private_fields(client, group_trip):
     item = shared["days"][0]["items"][0]
     assert item == {"id": "item_1", "time": "09:00", "title": "Breakfast", "category": "meal", "place_name": "Café"}
     assert shared["rating"] == 5
-    assert all(set(m) == {"user_id", "display_name"} for m in shared["members"])
+    assert all(set(m) == {"user_id", "display_name", "avatar_url"} for m in shared["members"])
 
 
 def test_only_the_owner_changes_privacy(client, group_trip):

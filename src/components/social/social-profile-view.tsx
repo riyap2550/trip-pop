@@ -27,7 +27,12 @@ export function SocialProfileView({ userId }: { userId: string }) {
   return (
     <View style={styles.container}>
       <Card style={styles.header}>
-        <UserAvatar userId={profile.user.id} name={profile.user.display_name} size={88} />
+        <UserAvatar
+          userId={profile.user.id}
+          name={profile.user.display_name}
+          avatarUrl={profile.user.avatar_url}
+          size={88}
+        />
         <ThemedText type="subtitle">{profile.user.display_name || 'Traveler'}</ThemedText>
         <View style={styles.stats}>
           {stats.map(([label, value]) => (
