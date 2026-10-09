@@ -5,12 +5,14 @@ import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { DateRangeCalendar } from '@/components/date-range-calendar';
+import { UserAvatar } from '@/components/social/user-avatar';
 import { ThemedText } from '@/components/themed-text';
 import { ToolCallStatus } from '@/components/tool-call-status';
 import { Button, Card, Chip, ErrorText, formatDate, Input, Screen, Segmented, Stepper } from '@/components/ui/primitives';
 import { Spacing } from '@/constants/theme';
 import { useAgentActivity } from '@/hooks/agent-activity';
 import { useApi, useJob } from '@/hooks/use-api';
+import { useAuth } from '@/hooks/use-auth';
 import { useTheme } from '@/hooks/use-theme';
 import { api } from '@/lib/api';
 import { emitDataChanged } from '@/lib/data-events';
@@ -32,6 +34,8 @@ const MAX_TRAVELERS = 12;
 
 export default function PlanScreen() {
   const theme = useTheme();
+  const auth = useAuth();
+  const me = auth.status === 'authenticated' && auth.user.avatar_url ? auth.user : null;
   const [filters, setFilters] = useState<PlanFilters>(EMPTY_FILTERS);
   const [problem, setProblem] = useState<string | null>(null);
   const { refresh: refreshActivity } = useAgentActivity();
@@ -80,14 +84,25 @@ export default function PlanScreen() {
             </ThemedText>
             <Link href="/profile" asChild>
               <Pressable hitSlop={10} accessibilityRole="button" accessibilityLabel="Your travel profile">
-                {({ pressed }) => (
-                  <SymbolView
-                    name={{ ios: 'person.crop.circle', android: 'account_circle' }}
-                    tintColor={theme.heroText}
-                    size={30}
-                    style={{ opacity: pressed ? 0.6 : 1 }}
-                  />
-                )}
+                {({ pressed }) =>
+                  me ? (
+                    <View style={{ opacity: pressed ? 0.6 : 1 }}>
+                      <UserAvatar
+                        userId={me.id}
+                        name={me.display_name || me.email}
+                        avatarUrl={me.avatar_url}
+                        size={36}
+                      />
+                    </View>
+                  ) : (
+                    <SymbolView
+                      name={{ ios: 'person.crop.circle', android: 'account_circle' }}
+                      tintColor={theme.heroText}
+                      size={30}
+                      style={{ opacity: pressed ? 0.6 : 1 }}
+                    />
+                  )
+                }
               </Pressable>
             </Link>
           </View>
