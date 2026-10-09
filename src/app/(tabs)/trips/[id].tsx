@@ -172,6 +172,9 @@ export default function TripScreen() {
         </View>
       )}
 
+      <SectionTitle>Photos</SectionTitle>
+      <TripPhotos tripId={trip.id} days={trip.days} canUpload={canEdit} />
+
       <View style={styles.sectionRow}>
         <SectionTitle>Itinerary</SectionTitle>
         {active && canEdit && (
@@ -219,9 +222,6 @@ export default function TripScreen() {
           {editing && <Chip label="+ Add to this day" onPress={() => openItem(day.date)} />}
         </Card>
       ))}
-
-      <SectionTitle>Photos</SectionTitle>
-      <TripPhotos tripId={trip.id} days={trip.days} canUpload={canEdit} />
 
       {trip.changes.length > 0 && <SectionTitle>Changes made on the go</SectionTitle>}
       {trip.changes.map((c) => (

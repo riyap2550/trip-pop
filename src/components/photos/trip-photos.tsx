@@ -5,7 +5,7 @@ import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { PhotoThumb } from '@/components/photos/photo-thumb';
 import { ThemedText } from '@/components/themed-text';
-import { Card, ErrorText, formatDate } from '@/components/ui/primitives';
+import { Card, ErrorText } from '@/components/ui/primitives';
 import { Spacing } from '@/constants/theme';
 import { useApi } from '@/hooks/use-api';
 import { useTheme } from '@/hooks/use-theme';
@@ -15,8 +15,9 @@ import { emitDataChanged } from '@/lib/data-events';
 const THUMB = 96;
 
 /**
- * A trip's photos grouped by day. Pass `photos` when the screen already has them (the shared trip view);
- * otherwise they're loaded here. With `canUpload`, every day ends with an Add tile.
+ * A trip's photos in one horizontal strip: a single dump spot rather than a section per day. Pass `photos`
+ * when the screen already has them (the shared trip view); otherwise they're loaded here. With `canUpload`,
+ * the strip starts with an Add tile. The server still files each photo under a trip day, so uploads use the first.
  */
 export function TripPhotos({
   tripId,
@@ -33,21 +34,10 @@ export function TripPhotos({
   const [progress, setProgress] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const list = photos ?? data ?? [];
+  const uploadDate = days[0]?.date;
 
-  const dayDates = new Set(days.map((d) => d.date));
-  const groups = days
-    .map((day, i) => ({
-      key: day.date,
-      label: `Day ${i + 1} · ${formatDate(day.date)}`,
-      date: day.date as string | null,
-      photos: list.filter((p) => p.day_date === day.date),
-    }))
-    .filter((g) => canUpload || g.photos.length > 0);
-  // Photos from days that no longer exist, after the trip's dates were edited
-  const orphans = list.filter((p) => !dayDates.has(p.day_date));
-  if (orphans.length) groups.push({ key: 'other', label: 'Other photos', date: null, photos: orphans });
-
-  const addPhotos = async (dayDate: string) => {
+  const addPhotos = async () => {
+    if (!uploadDate) return;
     setUploadError(null);
     // No permission request needed: the system picker only hands over what the user selects.
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -64,7 +54,7 @@ export function TripPhotos({
       // One at a time, so a slow connection isn't swamped and progress reads naturally
       for (const [i, asset] of assets.entries()) {
         setProgress(`Uploading ${i + 1} of ${assets.length}…`);
-        await api.uploadPhoto(tripId, dayDate, asset);
+        await api.uploadPhoto(tripId, uploadDate, asset);
       }
     } catch (e) {
       setUploadError((e as Error).message);
@@ -75,7 +65,7 @@ export function TripPhotos({
     }
   };
 
-  if (!groups.length && !error) {
+  if (!list.length && !canUpload && !error) {
     return (
       <Card>
         <ThemedText type="small" themeColor="textSecondary">
@@ -93,24 +83,17 @@ export function TripPhotos({
           {progress}
         </ThemedText>
       )}
-      {groups.map((group) => (
-        <View key={group.key} style={styles.group}>
-          <ThemedText type="smallBold">{group.label}</ThemedText>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
-            {group.photos.map((photo) => (
-              <PhotoThumb
-                key={photo.id}
-                photo={photo}
-                size={THUMB}
-                onPress={() => router.push({ pathname: '/photo/[id]', params: { id: photo.id } })}
-              />
-            ))}
-            {canUpload && group.date && (
-              <AddTile disabled={!!progress} onPress={() => addPhotos(group.date as string)} />
-            )}
-          </ScrollView>
-        </View>
-      ))}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
+        {canUpload && <AddTile disabled={!!progress || !uploadDate} onPress={addPhotos} />}
+        {list.map((photo) => (
+          <PhotoThumb
+            key={photo.id}
+            photo={photo}
+            size={THUMB}
+            onPress={() => router.push({ pathname: '/photo/[id]', params: { id: photo.id } })}
+          />
+        ))}
+      </ScrollView>
     </View>
   );
 }
@@ -122,7 +105,7 @@ function AddTile({ onPress, disabled }: { onPress: () => void; disabled: boolean
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel="Add photos to this day"
+      accessibilityLabel="Add photos"
       style={({ pressed }) => [
         styles.add,
         { borderColor: theme.border, backgroundColor: theme.backgroundElement, opacity: disabled ? 0.45 : pressed ? 0.7 : 1 },
@@ -139,7 +122,6 @@ function AddTile({ onPress, disabled }: { onPress: () => void; disabled: boolean
 
 const styles = StyleSheet.create({
   container: { gap: Spacing.three },
-  group: { gap: Spacing.two },
   strip: { gap: Spacing.two },
   add: {
     width: THUMB,
