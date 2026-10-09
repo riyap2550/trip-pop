@@ -182,7 +182,7 @@ export type Alert = {
   id: string;
   watch_id: string;
   trip_id: string;
-  hold_id: string;
+  hold_id: string | null;
   title: string;
   body: string;
   created_at: string;

@@ -3,7 +3,7 @@
 Runs on a schedule without being prompted. Each tick it:
 - re-prices every active flight/hotel watch and decides whether the new price
   is worth an alert (hit the target, or an unusual dip versus the recent trend);
-- on an alert, places a free hold that waits for the traveler's approval;
+- on an alert, notifies the traveler. It never places a hold on its own;
 - expires stale holds and moves trips through planned → in_progress → awaiting_feedback.
 """
 
@@ -135,12 +135,11 @@ def tick() -> dict:
             watch["history"] = (watch["history"] + [{"t": store.now_iso(), "price": price}])[-HISTORY_LIMIT:]
             watch["last_checked"] = store.now_iso()
             if reason:
-                hold = place_hold(state, watch, price, reason)
                 watch["last_alert_price"] = price
                 state["alerts"].insert(0, {
                     "id": store.new_id("alert"), "watch_id": watch["id"], "trip_id": watch["trip_id"],
-                    "hold_id": hold["id"], "title": f"Price drop: {watch['label']}",
-                    "body": f"Now ${price:,.0f} {watch['price_unit']}. {reason} We've placed a free hold for you to approve.",
+                    "hold_id": None, "title": f"Price drop: {watch['label']}",
+                    "body": f"Now ${price:,.0f} {watch['price_unit']}. {reason}",
                     "created_at": store.now_iso(), "read": False,
                 })
                 alerts += 1

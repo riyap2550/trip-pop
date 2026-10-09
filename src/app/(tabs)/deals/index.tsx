@@ -56,7 +56,7 @@ export default function DealsScreen() {
     <Screen refreshing={refreshing} onRefresh={refresh}>
       <ThemedText type="small" themeColor="textSecondary">
         I check your flight and hotel prices in the background. When a price hits your target or drops unusually low,
-        I place a free hold and ask you before anything is booked.
+        I send you an alert. I never place a hold or book anything on my own.
       </ThemedText>
       <Button title="Check prices now" variant="secondary" onPress={checkNow} loading={checking} />
       {checkResult && <ThemedText type="small">{checkResult}</ThemedText>}
