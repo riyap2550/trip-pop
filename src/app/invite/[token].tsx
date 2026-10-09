@@ -43,7 +43,7 @@ export default function InviteScreen() {
     setAcceptError(null);
     try {
       const result = await api.acceptInvite(token);
-      router.replace({ pathname: '/(tabs)/trips/[id]', params: { id: result.trip_id } });
+      router.replace({ pathname: '/(tabs)/trips/[id]', params: { id: result.trip_id } }, { withAnchor: true });
     } catch (err) {
       setAcceptError(err instanceof Error ? err.message : 'Failed to accept invite.');
       setAccepting(false);

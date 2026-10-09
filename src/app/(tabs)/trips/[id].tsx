@@ -7,6 +7,7 @@ import { CollaboratorAvatars } from '@/components/collaborator-avatars';
 import { FeedbackForm } from '@/components/feedback-form';
 import { HoldCard } from '@/components/hold-card';
 import { ItineraryItemRow } from '@/components/itinerary-item';
+import { TripPhotos } from '@/components/photos/trip-photos';
 import { ThemedText } from '@/components/themed-text';
 import {
   Button,
@@ -26,8 +27,8 @@ import { useApi } from '@/hooks/use-api';
 import { useTheme } from '@/hooks/use-theme';
 import { useTripSync } from '@/hooks/use-trip-sync';
 import { api, type ItineraryEvent, type TripDetail } from '@/lib/api';
-import { isDayTrip } from '@/lib/dates';
-import { TRIP_STATUS } from '@/lib/labels';
+import { isDayTrip, isoDate } from '@/lib/dates';
+import { TRIP_PRIVACY, TRIP_STATUS } from '@/lib/labels';
 
 export default function TripScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -50,6 +51,7 @@ export default function TripScreen() {
 
   const status = TRIP_STATUS[trip.status];
   const active = trip.status !== 'completed' && trip.status !== 'awaiting_feedback';
+  const started = trip.start_date.slice(0, 10) <= isoDate(new Date());
   const pendingHolds = trip.holds.filter((h) => h.status === 'pending_approval');
   const openDocs = trip.documents.filter((d) => d.action_required && !d.done);
   const openItem = (date: string, item?: string) =>
@@ -71,6 +73,7 @@ export default function TripScreen() {
             {trip.title}
           </ThemedText>
           <Pill label={status.label} color={theme[status.tone]} />
+          <Pill label={TRIP_PRIVACY[trip.privacy].label} />
         </View>
         <ThemedText type="small" themeColor="textSecondary">
           {trip.destination}, {trip.country} · {formatDateRange(trip.start_date, trip.end_date)}
@@ -82,6 +85,22 @@ export default function TripScreen() {
             onPress={() => router.push({ pathname: '/trip-members/[id]', params: { id: trip.id } })}
           />
         )}
+        <View style={styles.row}>
+          {isOwner && (
+            <Button
+              title="Invite others"
+              variant="secondary"
+              onPress={() =>
+                router.push({ pathname: '/trip-members/[id]', params: { id: trip.id, title: trip.title } })
+              }
+            />
+          )}
+          <Button
+            title="Share"
+            variant="secondary"
+            onPress={() => router.push({ pathname: '/share-trip/[id]', params: { id: trip.id } })}
+          />
+        </View>
         <ThemedText type="small">{trip.summary}</ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
           Why it fits: {trip.why_it_fits}
@@ -105,7 +124,25 @@ export default function TripScreen() {
 
       <CostCard trip={trip} />
 
-      {trip.status === 'awaiting_feedback' && <FeedbackCard trip={trip} onDone={refresh} />}
+      {trip.status === 'awaiting_feedback' && (
+        <FeedbackCard
+          trip={trip}
+          onDone={() => {
+            refresh();
+            // Only the owner can open up a private trip, so don't offer sharing to anyone else
+            if (isOwner || trip.privacy !== 'private') {
+              Alert.alert('Share this trip?', 'Let friends see where you went.', [
+                { text: 'Not now', style: 'cancel' },
+                {
+                  text: 'Share',
+                  onPress: () =>
+                    router.push({ pathname: '/share-trip/[id]', params: { id: trip.id, from: 'feedback' } }),
+                },
+              ]);
+            }
+          }}
+        />
+      )}
       {trip.feedback && (
         <Card>
           <ThemedText type="heading">Your feedback · {'★'.repeat(trip.feedback.rating)}</ThemedText>
@@ -118,6 +155,7 @@ export default function TripScreen() {
         <HoldCard
           key={hold.id}
           hold={hold}
+          readOnly={!canEdit}
           onChange={(h) => setData({ ...trip, holds: trip.holds.map((x) => (x.id === h.id ? h : x)) })}
         />
       ))}
@@ -182,6 +220,9 @@ export default function TripScreen() {
         </Card>
       ))}
 
+      <SectionTitle>Photos</SectionTitle>
+      <TripPhotos tripId={trip.id} days={trip.days} canUpload={canEdit} />
+
       {trip.changes.length > 0 && <SectionTitle>Changes made on the go</SectionTitle>}
       {trip.changes.map((c) => (
         <Card key={c.at}>
@@ -209,7 +250,7 @@ export default function TripScreen() {
       </Card>
 
       <View style={styles.row}>
-        {active && isOwner && (
+        {active && started && isOwner && (
           <Button
             title="Trip's over"
             variant="secondary"

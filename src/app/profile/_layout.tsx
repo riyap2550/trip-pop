@@ -9,7 +9,7 @@ export default function ProfileLayout() {
       <Stack.Screen
         name="index"
         options={{
-          title: 'Profile',
+          title: 'Travel profile',
           headerRight: () => (
             <Pressable onPress={() => router.back()} hitSlop={8} accessibilityRole="button">
               <ThemedText type="smallBold" themeColor="tint">

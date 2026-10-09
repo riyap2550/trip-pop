@@ -65,6 +65,14 @@ function InnerLayout() {
               name="trip-members/[id]"
               options={{ ...sheetScreenOptions, title: 'Trip Members', headerRight: () => <ModalClose label="Done" /> }}
             />
+            <Stack.Screen
+              name="photo/[id]"
+              options={{ ...sheetScreenOptions, title: 'Photo', headerRight: () => <ModalClose label="Done" /> }}
+            />
+            <Stack.Screen
+              name="share-trip/[id]"
+              options={{ ...sheetScreenOptions, title: 'Share trip', headerRight: () => <ModalClose label="Cancel" /> }}
+            />
           </Stack.Protected>
           <Stack.Screen name="invite/[token]" options={{ headerShown: true, title: 'Trip Invite' }} />
         </Stack>

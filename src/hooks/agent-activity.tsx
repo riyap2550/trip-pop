@@ -11,6 +11,8 @@ import { useAuth } from '@/hooks/use-auth';
 type Activity = {
   pendingApprovals: number;
   openDocuments: number;
+  /** Friend requests waiting for the user's answer, for the Social tab badge. */
+  incomingFriendRequests: number;
   /** Finished trips waiting for a rating that haven't been snoozed, oldest first. */
   feedbackDue: Trip[];
   /** Show the feedback prompt for this trip right away (e.g. just ended), ahead of any others. */
@@ -23,6 +25,7 @@ type Activity = {
 const AgentActivityContext = createContext<Activity>({
   pendingApprovals: 0,
   openDocuments: 0,
+  incomingFriendRequests: 0,
   feedbackDue: [],
   promptFeedback: () => {},
   dismissFeedback: () => {},
@@ -41,6 +44,7 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
   const isAuthenticated = auth.status === 'authenticated';
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const [openDocuments, setOpenDocuments] = useState(0);
+  const [incomingFriendRequests, setIncomingFriendRequests] = useState(0);
   const [feedbackDue, setFeedbackDue] = useState<Trip[]>([]);
   // A trip the traveler just ended stays first, so a background sync can't swap the prompt mid-rating.
   const prioritized = useRef<string | null>(null);
@@ -71,6 +75,12 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       firstLoad.current = false;
     } catch {
       // Backend offline; screens show their own errors.
+    }
+    // Separate, so a problem with the social endpoints can't stop the badges and reminders above.
+    try {
+      setIncomingFriendRequests((await api.friends()).incoming.length);
+    } catch {
+      // Screens show their own errors.
     }
   }, [isAuthenticated]);
 
@@ -118,6 +128,7 @@ export function AgentActivityProvider({ children }: { children: ReactNode }) {
       value={{
         pendingApprovals: isAuthenticated ? pendingApprovals : 0,
         openDocuments: isAuthenticated ? openDocuments : 0,
+        incomingFriendRequests: isAuthenticated ? incomingFriendRequests : 0,
         feedbackDue: isAuthenticated ? feedbackDue : [],
         promptFeedback,
         dismissFeedback,

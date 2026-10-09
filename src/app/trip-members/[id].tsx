@@ -1,3 +1,4 @@
+import * as Linking from 'expo-linking';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { Share, StyleSheet, View } from 'react-native';
@@ -7,7 +8,6 @@ import {
   Button,
   Card,
   ErrorText,
-  Input,
   Pill,
   Screen,
   Segmented,
@@ -31,15 +31,13 @@ const ROLE_PILL_LABELS: Record<MemberRole, string> = {
 };
 
 export default function TripMembersScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, title } = useLocalSearchParams<{ id: string; title?: string }>();
   const theme = useTheme();
   const { data: members, error, refreshing, refresh } = useApi(() => api.tripMembers(id));
 
-  const [phone, setPhone] = useState('');
   const [inviteRole, setInviteRole] = useState<'editor' | 'viewer'>('viewer');
   const [inviting, setInviting] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
-  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
 
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [roleUpdatingId, setRoleUpdatingId] = useState<string | null>(null);
@@ -48,17 +46,19 @@ export default function TripMembersScreen() {
   const currentUserIsOwner = members?.some((m) => m.role === 'owner') ?? false;
 
   async function handleInvite() {
-    if (!phone.trim()) {
-      setInviteError('Enter a phone number.');
-      return;
-    }
     setInviting(true);
     setInviteError(null);
-    setInviteUrl(null);
     try {
-      const result = await api.inviteCollaborator(id, phone.trim(), inviteRole);
-      setInviteUrl(result.url);
-      setPhone('');
+      const { token } = await api.inviteCollaborator(id, inviteRole);
+      // Built on the client so the link opens in whatever is running this app:
+      // exp://…/--/invite/<token> in Expo Go, trippop://invite/<token> in a build.
+      const url = Linking.createURL(`invite/${token}`);
+      const trip = title ? `"${title}"` : 'my trip';
+      // Opens the system share sheet: WhatsApp, Messages, Mail, copy, etc.
+      await Share.share({
+        message: `Join ${trip} on TripPop: ${url}`,
+        title: 'Join my trip on TripPop',
+      });
     } catch (err) {
       setInviteError(err instanceof Error ? err.message : 'Failed to create invite.');
     } finally {
@@ -97,6 +97,31 @@ export default function TripMembersScreen() {
     <Screen refreshing={refreshing} onRefresh={refresh}>
       <Stack.Screen options={{ title: 'Trip Members' }} />
 
+      {currentUserIsOwner && (
+        <>
+          <SectionTitle>Invite others</SectionTitle>
+          <Card>
+            <ThemedText type="small" themeColor="textSecondary">
+              Send a link by WhatsApp, Messages, or anywhere else. Each link works once and
+              expires in 48 hours.
+            </ThemedText>
+            <Segmented
+              options={ROLE_OPTIONS}
+              value={inviteRole}
+              onChange={setInviteRole}
+              labels={ROLE_LABELS}
+            />
+            <ThemedText type="small" themeColor="textSecondary">
+              {inviteRole === 'editor'
+                ? 'Editors can change the itinerary.'
+                : 'Viewers can see the trip but not change it.'}
+            </ThemedText>
+            {inviteError && <ErrorText message={inviteError} />}
+            <Button title="Share invite link" onPress={handleInvite} loading={inviting} />
+          </Card>
+        </>
+      )}
+
       <SectionTitle>Members</SectionTitle>
       {error && <ErrorText message={error} />}
       {actionError && <ErrorText message={actionError} />}
@@ -131,52 +156,6 @@ export default function TripMembersScreen() {
         </Card>
       ))}
 
-      {currentUserIsOwner && (
-        <>
-          <SectionTitle>Invite someone</SectionTitle>
-          <Card>
-            <Input
-              placeholder="Phone number"
-              value={phone}
-              onChangeText={setPhone}
-              keyboardType="phone-pad"
-              autoCorrect={false}
-            />
-            <ThemedText type="small" themeColor="textSecondary">
-              Role
-            </ThemedText>
-            <Segmented
-              options={ROLE_OPTIONS}
-              value={inviteRole}
-              onChange={setInviteRole}
-              labels={ROLE_LABELS}
-            />
-            {inviteError && <ErrorText message={inviteError} />}
-            <Button
-              title="Send invite link"
-              onPress={handleInvite}
-              loading={inviting}
-            />
-            {inviteUrl && (
-              <View style={styles.inviteResult}>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Invite link:
-                </ThemedText>
-                <ThemedText type="small" style={{ color: theme.accent }}>
-                  {inviteUrl}
-                </ThemedText>
-                <Button
-                  title="Share link"
-                  variant="secondary"
-                  onPress={() =>
-                    Share.share({ message: inviteUrl, title: 'Join my trip on TripPop' })
-                  }
-                />
-              </View>
-            )}
-          </Card>
-        </>
-      )}
     </Screen>
   );
 }
@@ -195,8 +174,5 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: Spacing.two,
     flexWrap: 'wrap',
-  },
-  inviteResult: {
-    gap: Spacing.two,
   },
 });

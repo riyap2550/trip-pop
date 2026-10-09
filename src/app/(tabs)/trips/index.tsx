@@ -1,4 +1,5 @@
 import { Link, router } from 'expo-router';
+import { useState } from 'react';
 import { Pressable, RefreshControl, StyleSheet, View } from 'react-native';
 import Animated, {
   Extrapolation,
@@ -9,6 +10,7 @@ import Animated, {
   useSharedValue,
 } from 'react-native-reanimated';
 
+import { TripCalendar } from '@/components/calendar/trip-calendar';
 import { ThemedText } from '@/components/themed-text';
 import {
   Button,
@@ -19,6 +21,7 @@ import {
   money,
   Pill,
   screenContentStyle,
+  Segmented,
 } from '@/components/ui/primitives';
 import { Spacing } from '@/constants/theme';
 import { useApi } from '@/hooks/use-api';
@@ -38,6 +41,7 @@ const FADE_DISTANCE = 160;
 export default function TripsScreen() {
   const theme = useTheme();
   const { data: trips, error, refreshing, refresh } = useApi(api.trips);
+  const [mode, setMode] = useState<'list' | 'calendar'>('list');
 
   // The background shifts to the "past" color as the Past trips divider scrolls up past the middle of the screen.
   const scrollY = useSharedValue(0);
@@ -46,7 +50,8 @@ export default function TripsScreen() {
   const onScroll = useAnimatedScrollHandler((e) => {
     scrollY.value = e.contentOffset.y;
   });
-  const hasPast = !!trips?.some((t) => isPast(t, isoDate(new Date())));
+  // The calendar has no Past divider, so the background stays put
+  const hasPast = mode === 'list' && !!trips?.some((t) => isPast(t, isoDate(new Date())));
   const backgroundStyle = useAnimatedStyle(() => {
     const progress =
       !hasPast || dividerY.value < 0
@@ -80,11 +85,19 @@ export default function TripsScreen() {
       contentContainerStyle={screenContentStyle}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}>
       <ErrorText message={error} />
+      <Segmented
+        options={['list', 'calendar'] as const}
+        labels={{ list: 'List', calendar: 'Calendar' }}
+        value={mode}
+        onChange={setMode}
+      />
       {trips?.length === 0 && (
         <EmptyState title="No trips yet" body="Head to Plan and describe the trip you want." />
       )}
 
-      {!!trips?.length && (
+      {mode === 'calendar' && <TripCalendar trips={trips ?? []} />}
+
+      {mode === 'list' && !!trips?.length && (
         <>
           <ThemedText type="heading" style={styles.sectionTitle}>
             Upcoming trips
@@ -102,7 +115,7 @@ export default function TripsScreen() {
         </>
       )}
 
-      {past.length > 0 && (
+      {mode === 'list' && past.length > 0 && (
         <>
           <View
             style={styles.divider}

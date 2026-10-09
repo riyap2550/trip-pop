@@ -22,8 +22,17 @@ function timeLeft(iso: string) {
   return h >= 1 ? `${h}h left` : `${Math.ceil(ms / 60_000)}m left`;
 }
 
-/** A held deal or a prepared reservation change. Nothing is final until the traveler approves. */
-export function HoldCard({ hold, onChange }: { hold: Hold; onChange: (hold: Hold) => void }) {
+/** A held deal or a prepared reservation change. Nothing is final until the traveler approves.
+ * `readOnly` hides the decision buttons for viewers, who can't approve or decline. */
+export function HoldCard({
+  hold,
+  onChange,
+  readOnly = false,
+}: {
+  hold: Hold;
+  onChange: (hold: Hold) => void;
+  readOnly?: boolean;
+}) {
   const theme = useTheme();
   const [busy, setBusy] = useState<'approve' | 'decline' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +74,7 @@ export function HoldCard({ hold, onChange }: { hold: Hold; onChange: (hold: Hold
       </ThemedText>
       {hold.reason && <ThemedText type="small">{hold.reason}</ThemedText>}
       <ThemedText type="smallBold">{priceLabel}</ThemedText>
-      {pending && (
+      {pending && !readOnly && (
         <View style={styles.row}>
           <Button
             title={hold.kind === 'change' ? 'Approve change' : 'Approve & book'}

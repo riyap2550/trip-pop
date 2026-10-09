@@ -112,8 +112,8 @@ def run_agent(system: str, prompt: str, tools: list[dict], handlers: dict[str, C
 
 # --- Shared helpers ------------------------------------------------------------
 
-def _public_profile() -> dict:
-    profile = store.read()["profile"]
+def _public_profile(user_id: str) -> dict:
+    profile = store.profile_for(store.read(), user_id)
     return {k: v for k, v in profile.items() if k != "history"}
 
 
@@ -344,6 +344,7 @@ def _save_itinerary(created: list[str], current_user_id: str = "", author_name: 
 
         if not existing:
             trip["owner_user_id"] = current_user_id
+            trip["privacy"] = "friends"
             state["trips"].insert(0, trip)
             if current_user_id:
                 # Create owner membership if not already present
@@ -375,7 +376,7 @@ def _save_itinerary(created: list[str], current_user_id: str = "", author_name: 
 def plan_trip(goal: str, current_user_id: str, author_name: str, on_step: StepCallback) -> dict:
     created: list[str] = []
     handlers = {
-        "get_travel_profile": _public_profile,
+        "get_travel_profile": lambda: _public_profile(current_user_id),
         "research_destinations": providers.research_destinations,
         "add_destination": providers.add_destination,
         "quote_trip": _quote_trip,
@@ -717,7 +718,7 @@ def log_chat(trip_id: str, role: str, text: str) -> None:
             trip["chat"] = (trip.get("chat", []) + [entry])[-CHAT_HISTORY_LIMIT:]
 
 
-def chat_trip(trip_id: str, message: str, local_time: str | None, on_step: StepCallback) -> dict:
+def chat_trip(trip_id: str, message: str, local_time: str | None, user_id: str, on_step: StepCallback) -> dict:
     trip = store.find(store.read()["trips"], trip_id)
     if not trip:
         raise AgentError("Trip not found.")
@@ -769,7 +770,7 @@ def chat_trip(trip_id: str, message: str, local_time: str | None, on_step: StepC
                        for d in trip["days"]]
     earlier = trip.get("chat", [])[:-1][-CHAT_PROMPT_MESSAGES:]  # the last entry is this message
     transcript = "\n".join(f"{'Traveler' if m['role'] == 'user' else 'You'}: {m['text']}" for m in earlier) or "(none yet)"
-    prompt = (f"{when}\n\nTraveler profile:\n{json.dumps(_public_profile())}\n\n"
+    prompt = (f"{when}\n\nTraveler profile:\n{json.dumps(_public_profile(user_id))}\n\n"
               f"Trip:\n{json.dumps(compact)}\n\nConversation so far:\n{transcript}\n\n"
               f"Traveler's new message: {message}")
     handlers = {
@@ -817,10 +818,10 @@ FEEDBACK_TOOLS = [
 ]
 
 
-def apply_profile_update(reason: str, source: str, budget_style=None, typical_daily_budget=None, pace=None,
+def apply_profile_update(user_id: str, reason: str, source: str, budget_style=None, typical_daily_budget=None, pace=None,
                          add_interests=(), remove_interests=(), add_dislikes=(), add_notes=()) -> dict:
     with store.transaction() as state:
-        p = state["profile"]
+        p = store.profile_for(state, user_id)
         changes = []
         for field, value in (("budget_style", budget_style), ("typical_daily_budget", typical_daily_budget), ("pace", pace)):
             if value is not None and p.get(field) != value:
@@ -838,16 +839,16 @@ def apply_profile_update(reason: str, source: str, budget_style=None, typical_da
         return {"ok": True, "changes": changes}
 
 
-def process_feedback(trip_id: str, feedback: dict, on_step: StepCallback) -> dict:
+def process_feedback(trip_id: str, feedback: dict, user_id: str, on_step: StepCallback) -> dict:
     state = store.read()
     trip = store.find(state["trips"], trip_id)
     if not trip:
         raise AgentError("Trip not found.")
     compact = {k: trip.get(k) for k in ("title", "destination", "start_date", "end_date", "costs", "hotel_style", "days", "changes")}
-    prompt = (f"Current profile:\n{json.dumps(_public_profile())}\n\n"
+    prompt = (f"Current profile:\n{json.dumps(_public_profile(user_id))}\n\n"
               f"Finished trip:\n{json.dumps(compact)}\n\n"
               f"Traveler feedback:\n{json.dumps(feedback)}")
-    handlers = {"update_travel_profile": lambda **kw: apply_profile_update(source=f"feedback on {trip['title']}", **kw)}
+    handlers = {"update_travel_profile": lambda **kw: apply_profile_update(user_id, source=f"feedback on {trip['title']}", **kw)}
     summary = run_agent(FEEDBACK_SYSTEM, prompt, FEEDBACK_TOOLS, handlers, on_step)
     with store.transaction() as state:
         t = store.find(state["trips"], trip_id)
@@ -870,12 +871,13 @@ Then call record_requirements once with every item. For each one, set a deadline
 Your final reply appears on a phone screen. In 1 to 3 plain sentences, name anything urgent first."""
 
 
-def check_documents(trip_id: str, on_step: StepCallback) -> dict:
+def check_documents(trip_id: str, user_id: str, on_step: StepCallback) -> dict:
+    """Build one traveler's checklist for a trip from their own passport details."""
     state = store.read()
     trip = store.find(state["trips"], trip_id)
     if not trip:
         raise AgentError("Trip not found.")
-    profile = state["profile"]
+    profile = store.profile_for(state, user_id)
 
     def record_requirements(requirements: list[dict]):
         docs = []
@@ -885,14 +887,15 @@ def check_documents(trip_id: str, on_step: StepCallback) -> dict:
             remind = deadline - timedelta(days=int(r.get("lead_time_days") or 0))
             urgent = r.get("action_required", True) and remind <= today
             docs.append({
-                "id": store.new_id("doc"), "trip_id": trip_id, "title": r["title"], "detail": r.get("detail", ""),
+                "id": store.new_id("doc"), "trip_id": trip_id, "user_id": user_id, "title": r["title"], "detail": r.get("detail", ""),
                 "category": r.get("category", "other"), "action_required": r.get("action_required", True),
                 "deadline": deadline.isoformat(),
                 "remind_at": (max(remind, today) + timedelta(days=1 if urgent else 0)).isoformat() + "T09:00:00",
                 "urgent": urgent, "source_url": r.get("source_url"), "done": False,
             })
         with store.transaction() as s:
-            s["documents"] = [d for d in s["documents"] if d["trip_id"] != trip_id] + docs
+            s["documents"] = [d for d in s["documents"]
+                              if not (d["trip_id"] == trip_id and d.get("user_id") == user_id)] + docs
             t = store.find(s["trips"], trip_id)
             t["documents_checked_at"] = store.now_iso()
         return {"saved": len(docs)}

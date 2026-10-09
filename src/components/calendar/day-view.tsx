@@ -104,7 +104,7 @@ function TripDay({ entry, nowTime }: { entry: DayEntry; nowTime: string | null }
 
   return (
     <Card>
-      <Link href={`/trips/${trip.id}`} asChild>
+      <Link href={`/trips/${trip.id}`} withAnchor asChild>
         <Pressable style={styles.tripLink} accessibilityRole="link">
           <View style={{ flex: 1 }}>
             <ThemedText type="heading">{trip.title}</ThemedText>

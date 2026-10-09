@@ -61,6 +61,13 @@ export default function FeedbackScreen() {
         {thanks !== null ? (
           <Card>
             <ThemedText>{thanks}</ThemedText>
+            {/* dismissFeedback already ran, so leaving for the share sheet won't snooze this trip */}
+            {trip && (trip.membership?.role === 'owner' || trip.privacy !== 'private') && (
+              <Button
+                title="Share with friends"
+                onPress={() => router.replace({ pathname: '/share-trip/[id]', params: { id, from: 'feedback' } })}
+              />
+            )}
             <View style={styles.row}>
               <Button title="Done" onPress={close} />
               <Button
@@ -68,7 +75,7 @@ export default function FeedbackScreen() {
                 variant="secondary"
                 onPress={() => {
                   close();
-                  router.navigate(`/trips/${id}`);
+                  router.navigate(`/trips/${id}`, { withAnchor: true });
                 }}
               />
             </View>

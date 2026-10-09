@@ -18,7 +18,7 @@ You need Xcode (with an iOS simulator), Node, and Python 3.10 or later.
 ```bash
 npm install
 npm run backend:setup                     # one time: creates backend/.venv
-cp backend/.env.example backend/.env      # then add your ANTHROPIC_API_KEY
+cp backend/.env.example backend/.env      # then add your TRIPPOP_API_KEY
 
 npm run backend                           # terminal 1: API on :8000
 npx expo start --ios                      # terminal 2: opens the app in the iOS simulator

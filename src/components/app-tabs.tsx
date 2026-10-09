@@ -7,7 +7,7 @@ import { useAgentActivity } from '@/hooks/agent-activity';
 export default function AppTabs() {
   const scheme = useColorScheme();
   const colors = Colors[scheme === 'unspecified' ? 'light' : scheme];
-  const { pendingApprovals, openDocuments } = useAgentActivity();
+  const { pendingApprovals, openDocuments, incomingFriendRequests } = useAgentActivity();
 
   return (
     <NativeTabs
@@ -25,9 +25,12 @@ export default function AppTabs() {
         <NativeTabs.Trigger.Icon sf="airplane" md="flight" />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="calendar">
-        <NativeTabs.Trigger.Label>Calendar</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon sf="calendar" md="calendar_month" />
+      <NativeTabs.Trigger name="social">
+        <NativeTabs.Trigger.Label>Social</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="person.2" md="group" />
+        {incomingFriendRequests > 0 && (
+          <NativeTabs.Trigger.Badge>{String(incomingFriendRequests)}</NativeTabs.Trigger.Badge>
+        )}
       </NativeTabs.Trigger>
 
       <NativeTabs.Trigger name="deals">

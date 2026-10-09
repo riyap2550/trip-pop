@@ -118,7 +118,7 @@ export function MonthView({
 
       {entries.map(({ trip, day, dayNumber }) => (
         <Card key={trip.id}>
-          <Link href={`/trips/${trip.id}`} asChild>
+          <Link href={`/trips/${trip.id}`} withAnchor asChild>
             <Pressable style={styles.tripLink}>
               <View style={{ flex: 1 }}>
                 <ThemedText type="heading">{trip.title}</ThemedText>

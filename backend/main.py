@@ -3,9 +3,11 @@
 import asyncio
 import logging
 import secrets
+import shutil
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,19 +30,13 @@ from auth import (  # noqa: E402
     verify_password,
 )
 import push  # noqa: E402
+import social  # noqa: E402
+from permissions import require_member as _require_member  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("api")
 
-ROLE_ORDER = {"viewer": 0, "editor": 1, "owner": 2}
-
-
-def _require_member(state, trip_id, user_id, min_role="viewer"):
-    from store import user_role
-    role = user_role(state, trip_id, user_id)
-    if role is None or ROLE_ORDER.get(role, -1) < ROLE_ORDER[min_role]:
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-    return role
+VALID_INVITE_ROLES = {"viewer", "editor"}  # ownership is never handed out through invites or role changes
 
 
 @asynccontextmanager
@@ -52,6 +48,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Travel Agent", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.include_router(social.router)
 
 
 # --- Background jobs -------------------------------------------------------------
@@ -61,8 +58,9 @@ executor = ThreadPoolExecutor(max_workers=4)
 jobs: dict[str, dict] = {}
 
 
-def start_job(kind: str, fn, *args, then=None) -> dict:
-    job = {"id": store.new_id("job"), "kind": kind, "status": "running", "steps": [], "result": None, "error": None}
+def start_job(kind: str, fn, *args, user_id: str, then=None) -> dict:
+    job = {"id": store.new_id("job"), "kind": kind, "user_id": user_id, "status": "running", "steps": [],
+           "result": None, "error": None}
     jobs[job["id"]] = job
 
     def on_step(label: str):
@@ -95,10 +93,12 @@ def start_job(kind: str, fn, *args, then=None) -> dict:
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: str):
-    if job_id not in jobs:
+def get_job(job_id: str, current_user: dict = Depends(get_current_user)):
+    job = jobs.get(job_id)
+    # 404 rather than 403 for someone else's job, so job ids can't be probed
+    if not job or job.get("user_id") != current_user["id"]:
         raise HTTPException(404, "Job not found")
-    return jobs[job_id]
+    return job
 
 
 # --- Auth -------------------------------------------------------------------------------
@@ -198,7 +198,7 @@ def auth_refresh(body: RefreshIn):
 def auth_logout(body: LogoutIn, current_user: dict = Depends(get_current_user)):
     with store.transaction() as state:
         for record in state["refresh_tokens"]:
-            if record["token"] == body.refresh_token:
+            if record["token"] == body.refresh_token and record["user_id"] == current_user["id"]:
                 record["revoked"] = True
     return {"ok": True}
 
@@ -250,17 +250,26 @@ def plan(body: PlanIn, current_user: dict = Depends(get_current_user)):
 
     def check_docs_after(job):
         # Kick off the document check as soon as the trip exists.
-        docs_job = start_job("documents", agent.check_documents, job["result"]["trip_id"])
+        docs_job = start_job("documents", agent.check_documents, job["result"]["trip_id"], user_id,
+                             user_id=user_id)
         job["result"]["documents_job_id"] = docs_job["id"]
 
-    return start_job("plan", agent.plan_trip, body.goal, user_id, author_name, then=check_docs_after)
+    return start_job("plan", agent.plan_trip, body.goal, user_id, author_name, user_id=user_id,
+                     then=check_docs_after)
 
 
-def _check_docs_if_rescheduled(job):
-    """New dates or a new destination change what documents are needed and when, so check them again."""
-    if job["result"].get("schedule_changed"):
-        docs_job = start_job("documents", agent.check_documents, job["result"]["trip_id"])
-        job["result"]["documents_job_id"] = docs_job["id"]
+def _check_docs_if_rescheduled(actor_id: str):
+    """New dates or a new destination change what documents are needed and when, so check them again
+    for every member. The job returned to the client is the one for whoever made the change."""
+    def then(job):
+        if not job["result"].get("schedule_changed"):
+            return
+        trip_id = job["result"]["trip_id"]
+        for m in store.find_memberships(store.read(), trip_id):
+            docs_job = start_job("documents", agent.check_documents, trip_id, m["user_id"], user_id=m["user_id"])
+            if m["user_id"] == actor_id:
+                job["result"]["documents_job_id"] = docs_job["id"]
+    return then
 
 
 def _edit(fn, *args):
@@ -280,7 +289,8 @@ def patch_trip(trip_id: str, body: TripPatch, current_user: dict = Depends(get_c
         _require_member(state, trip_id, current_user["id"], min_role="editor")
     trip = _trip_or_404(trip_id)
     changes = _edit(agent.validate_trip_changes, trip, body.model_dump(exclude_none=True))
-    return start_job("edit", agent.update_trip, trip_id, changes, then=_check_docs_if_rescheduled)
+    return start_job("edit", agent.update_trip, trip_id, changes, user_id=current_user["id"],
+                     then=_check_docs_if_rescheduled(current_user["id"]))
 
 
 @app.post("/trips/{trip_id}/days/{day}/items")
@@ -382,7 +392,8 @@ def remove_item(trip_id: str, day: str, item_id: str, current_user: dict = Depen
 
 
 @app.post("/trips/{trip_id}/chat")
-def chat(trip_id: str, body: ChatIn):
+def chat(trip_id: str, body: ChatIn, current_user: dict = Depends(get_current_user)):
+    _require_member(store.read(), trip_id, current_user["id"])
     trip = _trip_or_404(trip_id)
     message = body.message.strip()
     if not message:
@@ -390,19 +401,24 @@ def chat(trip_id: str, body: ChatIn):
     if trip["status"] in ("completed", "awaiting_feedback"):
         raise HTTPException(400, "This trip is over, so it can't be changed.")
     agent.log_chat(trip_id, "user", message[:2000])
-    return start_job("chat", agent.chat_trip, trip_id, message[:2000], body.local_time, then=_check_docs_if_rescheduled)
+    return start_job("chat", agent.chat_trip, trip_id, message[:2000], body.local_time, current_user["id"],
+                     user_id=current_user["id"], then=_check_docs_if_rescheduled(current_user["id"]))
 
 
 @app.post("/trips/{trip_id}/feedback")
-def feedback(trip_id: str, body: FeedbackIn):
-    _trip_or_404(trip_id)
-    return start_job("feedback", agent.process_feedback, trip_id, body.model_dump())
+def feedback(trip_id: str, body: FeedbackIn, current_user: dict = Depends(get_current_user)):
+    _require_member(store.read(), trip_id, current_user["id"])
+    if _trip_or_404(trip_id)["status"] != "awaiting_feedback":
+        raise HTTPException(400, "You can rate a trip once it's over.")
+    return start_job("feedback", agent.process_feedback, trip_id, body.model_dump(), current_user["id"],
+                     user_id=current_user["id"])
 
 
 @app.post("/trips/{trip_id}/documents/check")
-def check_documents(trip_id: str):
+def check_documents(trip_id: str, current_user: dict = Depends(get_current_user)):
+    _require_member(store.read(), trip_id, current_user["id"])
     _trip_or_404(trip_id)
-    return start_job("documents", agent.check_documents, trip_id)
+    return start_job("documents", agent.check_documents, trip_id, current_user["id"], user_id=current_user["id"])
 
 
 # --- Trips ---------------------------------------------------------------------------
@@ -443,18 +459,22 @@ def get_trip(trip_id: str, current_user: dict = Depends(get_current_user)):
     members = store.find_memberships(state, trip_id)
     role = store.user_role(state, trip_id, current_user["id"])
     return {**trip,
-            "documents": [d for d in state["documents"] if d["trip_id"] == trip_id],
+            "documents": [d for d in state["documents"]
+                          if d["trip_id"] == trip_id and d.get("user_id") == current_user["id"]],
             "holds": [h for h in state["holds"] if h.get("trip_id") == trip_id],
             "membership": {"role": role, "members_count": len(members)}}
 
 
 @app.post("/trips/{trip_id}/end")
-def end_trip(trip_id: str):
+def end_trip(trip_id: str, current_user: dict = Depends(get_current_user)):
     """Mark a trip as finished now, so the feedback loop starts (the watcher does this automatically after end_date)."""
     with store.transaction() as state:
+        _require_member(state, trip_id, current_user["id"], min_role="owner")
         trip = store.find(state["trips"], trip_id)
         if not trip:
             raise HTTPException(404, "Trip not found")
+        if date.today() < date.fromisoformat(trip["start_date"]):
+            raise HTTPException(400, "This trip hasn't started yet, so it can't be over.")
         if trip["status"] != "completed":
             trip["status"] = "awaiting_feedback"
             trip.setdefault("ended_at", store.now_iso())
@@ -466,9 +486,10 @@ FEEDBACK_SNOOZE_HOURS = 24
 
 
 @app.post("/trips/{trip_id}/feedback/snooze")
-def snooze_feedback(trip_id: str):
+def snooze_feedback(trip_id: str, current_user: dict = Depends(get_current_user)):
     """'Maybe later' on the feedback prompt: don't ask about this trip again for a day."""
     with store.transaction() as state:
+        _require_member(state, trip_id, current_user["id"])
         trip = store.find(state["trips"], trip_id)
         if not trip:
             raise HTTPException(404, "Trip not found")
@@ -482,17 +503,19 @@ def delete_trip(trip_id: str, current_user: dict = Depends(get_current_user)):
     with store.transaction() as state:
         _require_member(state, trip_id, current_user["id"], min_role="owner")
         state["trips"] = [t for t in state["trips"] if t["id"] != trip_id]
-        for key in ("watches", "alerts", "holds", "documents"):
+        for key in ("watches", "alerts", "holds", "documents", "posts", "photos"):
             state[key] = [x for x in state[key] if x.get("trip_id") != trip_id]
         state["memberships"] = [m for m in state["memberships"] if m["trip_id"] != trip_id]
         state["itinerary_events"] = [e for e in state["itinerary_events"] if e["trip_id"] != trip_id]
+        state["invite_tokens"] = [i for i in state["invite_tokens"] if i["trip_id"] != trip_id]
+    shutil.rmtree(social.photos_dir() / trip_id, ignore_errors=True)
     return {"ok": True}
 
 
 # --- Group trips: members, invites, events -----------------------------------------------
 
 class InviteIn(BaseModel):
-    phone_number: str
+    phone_number: str | None = None
     role: str = "viewer"
 
 
@@ -514,6 +537,8 @@ def list_members(trip_id: str, current_user: dict = Depends(get_current_user)):
 
 @app.post("/trips/{trip_id}/invites")
 def create_invite(trip_id: str, body: InviteIn, current_user: dict = Depends(get_current_user)):
+    if body.role not in VALID_INVITE_ROLES:
+        raise HTTPException(400, "Invites can only be for viewers or editors.")
     with store.transaction() as state:
         _require_member(state, trip_id, current_user["id"], min_role="owner")
         trip = store.find(state["trips"], trip_id)
@@ -533,7 +558,8 @@ def create_invite(trip_id: str, body: InviteIn, current_user: dict = Depends(get
             "used": False,
         }
         state["invite_tokens"].append(invite)
-    print(f"[INVITE SMS STUB] Send to {body.phone_number}: {url}")
+    if body.phone_number:
+        print(f"[INVITE SMS STUB] Send to {body.phone_number}: {url}")
     return {"url": url, "token": token}
 
 
@@ -579,6 +605,8 @@ def accept_invite(token: str, current_user: dict = Depends(get_current_user)):
                 "avatar_url": current_user.get("avatar_url"),
             })
         invite["used"] = True
+    if not already:
+        start_job("documents", agent.check_documents, trip_id, current_user["id"], user_id=current_user["id"])
     return {"trip_id": trip_id}
 
 
@@ -586,6 +614,8 @@ def accept_invite(token: str, current_user: dict = Depends(get_current_user)):
 def remove_member(trip_id: str, user_id: str, current_user: dict = Depends(get_current_user)):
     with store.transaction() as state:
         _require_member(state, trip_id, current_user["id"], min_role="owner")
+        if store.user_role(state, trip_id, user_id) == "owner":
+            raise HTTPException(400, "The trip's owner can't be removed.")
         state["memberships"] = [
             m for m in state["memberships"]
             if not (m["trip_id"] == trip_id and m["user_id"] == user_id)
@@ -595,6 +625,8 @@ def remove_member(trip_id: str, user_id: str, current_user: dict = Depends(get_c
 
 @app.patch("/trips/{trip_id}/members/{user_id}")
 def update_member_role(trip_id: str, user_id: str, body: MemberRolePatch, current_user: dict = Depends(get_current_user)):
+    if body.role not in VALID_INVITE_ROLES:
+        raise HTTPException(400, "Members can only be viewers or editors.")
     with store.transaction() as state:
         _require_member(state, trip_id, current_user["id"], min_role="owner")
         member = next(
@@ -603,6 +635,8 @@ def update_member_role(trip_id: str, user_id: str, body: MemberRolePatch, curren
         )
         if not member:
             raise HTTPException(404, "Member not found")
+        if member["role"] == "owner":
+            raise HTTPException(400, "The trip's owner can't change role.")
         member["role"] = body.role
     return {"ok": True}
 
@@ -636,12 +670,22 @@ def register_push_token(body: PushTokenIn, current_user: dict = Depends(get_curr
 
 # --- Deals: watches, alerts, holds --------------------------------------------------------
 
+def _my_trip_ids(state: dict, uid: str) -> set[str]:
+    return {m["trip_id"] for m in state["memberships"] if m["user_id"] == uid}
+
+
 @app.get("/deals")
-def deals():
+def deals(current_user: dict = Depends(get_current_user)):
     state = store.read()
+    uid = current_user["id"]
+    mine = _my_trip_ids(state, uid)
     trips = {t["id"]: t["title"] for t in state["trips"]}
-    watches = [{**w, "trip_title": trips.get(w["trip_id"]), "history": w["history"][-30:]} for w in state["watches"]]
-    return {"watches": watches, "alerts": state["alerts"][:30], "holds": state["holds"][:30]}
+    roles = {m["trip_id"]: m["role"] for m in state["memberships"] if m["user_id"] == uid}
+    watches = [{**w, "trip_title": trips.get(w["trip_id"]), "history": w["history"][-30:], "my_role": roles[w["trip_id"]]}
+               for w in state["watches"] if w.get("trip_id") in mine]
+    alerts = [a for a in state["alerts"] if a.get("trip_id") in mine][:30]
+    holds = [{**h, "my_role": roles[h["trip_id"]]} for h in state["holds"] if h.get("trip_id") in mine][:30]
+    return {"watches": watches, "alerts": alerts, "holds": holds}
 
 
 class WatchPatch(BaseModel):
@@ -650,11 +694,12 @@ class WatchPatch(BaseModel):
 
 
 @app.patch("/watches/{watch_id}")
-def update_watch(watch_id: str, body: WatchPatch):
+def update_watch(watch_id: str, body: WatchPatch, current_user: dict = Depends(get_current_user)):
     with store.transaction() as state:
         watch = store.find(state["watches"], watch_id)
         if not watch:
             raise HTTPException(404, "Watch not found")
+        _require_member(state, watch["trip_id"], current_user["id"], "editor")
         if body.target_price is not None:
             watch["target_price"] = body.target_price
             watch["last_alert_price"] = None
@@ -663,16 +708,31 @@ def update_watch(watch_id: str, body: WatchPatch):
         return watch
 
 
+MANUAL_RUN_COOLDOWN_SECONDS = 30
+_last_manual_run: float = 0.0
+
+
 @app.post("/watcher/run")
-def run_watcher_now():
-    return watcher.tick()
+def run_watcher_now(current_user: dict = Depends(get_current_user)):
+    """'Check now' from the Deals tab. The tick covers every watch, so it's rate-limited across all users."""
+    global _last_manual_run
+    if time.monotonic() - _last_manual_run < MANUAL_RUN_COOLDOWN_SECONDS:
+        raise HTTPException(429, "Checked just now. Try again in a moment.")
+    _last_manual_run = time.monotonic()
+    before = {a["id"] for a in store.read()["alerts"]}
+    result = watcher.tick()
+    state = store.read()
+    mine = _my_trip_ids(state, current_user["id"])
+    created = [a for a in state["alerts"] if a["id"] not in before and a.get("trip_id") in mine]
+    return {"alerts_created": len(created), "checked_at": result["checked_at"]}
 
 
-def _decide_hold(hold_id: str, approve: bool) -> dict:
+def _decide_hold(hold_id: str, approve: bool, user_id: str) -> dict:
     with store.transaction() as state:
         hold = store.find(state["holds"], hold_id)
         if not hold:
             raise HTTPException(404, "Hold not found")
+        _require_member(state, hold.get("trip_id") or "", user_id, "editor")
         if hold["status"] != "pending_approval":
             raise HTTPException(409, f"This hold is already {hold['status'].replace('_', ' ')}.")
         hold["status"] = "approved" if approve else "declined"
@@ -689,31 +749,35 @@ def _decide_hold(hold_id: str, approve: bool) -> dict:
 
 
 @app.post("/holds/{hold_id}/approve")
-def approve_hold(hold_id: str):
-    return _decide_hold(hold_id, True)
+def approve_hold(hold_id: str, current_user: dict = Depends(get_current_user)):
+    return _decide_hold(hold_id, True, current_user["id"])
 
 
 @app.post("/holds/{hold_id}/decline")
-def decline_hold(hold_id: str):
-    return _decide_hold(hold_id, False)
+def decline_hold(hold_id: str, current_user: dict = Depends(get_current_user)):
+    return _decide_hold(hold_id, False, current_user["id"])
 
 
 @app.post("/alerts/read")
-def mark_alerts_read():
+def mark_alerts_read(current_user: dict = Depends(get_current_user)):
     with store.transaction() as state:
+        mine = _my_trip_ids(state, current_user["id"])
         for alert in state["alerts"]:
-            alert["read"] = True
+            if alert.get("trip_id") in mine:
+                alert["read"] = True
     return {"ok": True}
 
 
 # --- Documents -----------------------------------------------------------------------------
 
 @app.get("/documents")
-def documents():
+def documents(current_user: dict = Depends(get_current_user)):
     state = store.read()
-    trips = {t["id"]: t for t in state["trips"]}
+    uid = current_user["id"]
+    my_trip_ids = {m["trip_id"] for m in state["memberships"] if m["user_id"] == uid}
+    trips = {t["id"]: t for t in state["trips"] if t["id"] in my_trip_ids}
     docs = [{**d, "trip_title": trips[d["trip_id"]]["title"], "trip_start": trips[d["trip_id"]]["start_date"]}
-            for d in state["documents"] if d["trip_id"] in trips]
+            for d in state["documents"] if d["trip_id"] in trips and d.get("user_id") == uid]
     return sorted(docs, key=lambda d: (d["done"], not d["action_required"], d["deadline"]))
 
 
@@ -722,10 +786,10 @@ class DocPatch(BaseModel):
 
 
 @app.patch("/documents/{doc_id}")
-def update_document(doc_id: str, body: DocPatch):
+def update_document(doc_id: str, body: DocPatch, current_user: dict = Depends(get_current_user)):
     with store.transaction() as state:
         doc = store.find(state["documents"], doc_id)
-        if not doc:
+        if not doc or doc.get("user_id") != current_user["id"]:
             raise HTTPException(404, "Document not found")
         doc["done"] = body.done
         return doc
@@ -747,18 +811,19 @@ class ProfilePatch(BaseModel):
 
 
 @app.get("/profile")
-def get_profile():
-    return store.read()["profile"]
+def get_profile(current_user: dict = Depends(get_current_user)):
+    return store.profile_for(store.read(), current_user["id"])
 
 
 @app.patch("/profile")
-def update_profile(body: ProfilePatch):
+def update_profile(body: ProfilePatch, current_user: dict = Depends(get_current_user)):
     with store.transaction() as state:
         changes = body.model_dump(exclude_unset=True)
         if "home_airport" in changes and changes["home_airport"]:
             changes["home_airport"] = changes["home_airport"].strip().upper()
-        state["profile"].update(changes)
-        return state["profile"]
+        profile = store.profile_for(state, current_user["id"])
+        profile.update(changes)
+        return profile
 
 
 @app.get("/health")

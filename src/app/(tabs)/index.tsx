@@ -75,7 +75,7 @@ export default function PlanScreen() {
           <View style={[styles.sun, { backgroundColor: theme.accent }]} />
           <View style={[styles.sunGlow, { backgroundColor: theme.heroMuted }]} />
           <View style={styles.titleRow}>
-            <ThemedText type="accent" style={{ color: theme.heroMuted }}>
+            <ThemedText type="accent" style={[styles.brand, { color: theme.heroMuted }]}>
               TripPop
             </ThemedText>
             <Link href="/profile" asChild>
@@ -91,7 +91,7 @@ export default function PlanScreen() {
               </Pressable>
             </Link>
           </View>
-          <ThemedText type="subtitle" style={{ color: theme.heroText }}>
+          <ThemedText type="subtitle" style={[styles.heroTitle, { color: theme.heroText }]}>
             Where to next?
           </ThemedText>
           <ThemedText style={{ color: theme.heroMuted }}>
@@ -293,7 +293,7 @@ export default function PlanScreen() {
           <View style={styles.row}>
             <Button
               title="View itinerary"
-              onPress={() => router.push(`/trips/${planned.trip_id}`)}
+              onPress={() => router.push(`/trips/${planned.trip_id}`, { withAnchor: true })}
             />
             <Button
               title="Plan another"
@@ -342,6 +342,8 @@ const styles = StyleSheet.create({
   // A low sun over the water, purely decorative.
   sun: { position: 'absolute', width: 220, height: 220, borderRadius: 110, right: -70, bottom: -120, opacity: 0.35 },
   sunGlow: { position: 'absolute', width: 120, height: 120, borderRadius: 60, right: 10, bottom: -70, opacity: 0.25 },
+  brand: { fontSize: 28, lineHeight: 34 },
+  heroTitle: { fontSize: 32, lineHeight: 38 },
   titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sectionTitle: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },

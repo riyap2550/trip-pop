@@ -66,6 +66,7 @@ export default function DealsScreen() {
         <HoldCard
           key={hold.id}
           hold={hold}
+          readOnly={hold.my_role === 'viewer'}
           onChange={(h) => {
             setData({ ...data, holds: data.holds.map((x) => (x.id === h.id ? h : x)) });
             refreshActivity();
@@ -88,13 +89,15 @@ export default function DealsScreen() {
                   {watch.trip_title}
                 </ThemedText>
               </View>
-              <Switch
-                value={watch.active}
-                onValueChange={async (active) => {
-                  const updated = await api.updateWatch(watch.id, { active });
-                  setData({ ...data, watches: data.watches.map((w) => (w.id === watch.id ? { ...w, ...updated, history: w.history } : w)) });
-                }}
-              />
+              {watch.my_role !== 'viewer' && (
+                <Switch
+                  value={watch.active}
+                  onValueChange={async (active) => {
+                    const updated = await api.updateWatch(watch.id, { active });
+                    setData({ ...data, watches: data.watches.map((w) => (w.id === watch.id ? { ...w, ...updated, history: w.history } : w)) });
+                  }}
+                />
+              )}
             </View>
             <View style={styles.stats}>
               <Stat label="Now" value={money(t.current)} />
@@ -128,7 +131,7 @@ export default function DealsScreen() {
 
       {decided.length > 0 && <SectionTitle>Past holds</SectionTitle>}
       {decided.map((hold) => (
-        <HoldCard key={hold.id} hold={hold} onChange={() => {}} />
+        <HoldCard key={hold.id} hold={hold} readOnly={hold.my_role === 'viewer'} onChange={() => {}} />
       ))}
     </Screen>
   );
