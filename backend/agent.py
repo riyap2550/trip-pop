@@ -20,7 +20,8 @@ import store
 MODEL = os.getenv("TRAVEL_AGENT_MODEL", "claude-opus-5-5")
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-client = anthropic.Anthropic()
+# The project's key is TRIPPOP_API_KEY (see .env.example); the SDK's own ANTHROPIC_API_KEY is the fallback
+client = anthropic.Anthropic(api_key=os.getenv("TRIPPOP_API_KEY") or None)
 
 StepCallback = Callable[[str], None]
 
